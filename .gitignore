@@ -1,0 +1,11 @@
+.env
+.env.*.local
+*.local
+bin/
+tmp/
+.DS_Store
+*.test
+*.out
+coverage.*
+.sdd/
+docs/superpowers/

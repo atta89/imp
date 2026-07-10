@@ -1,0 +1,7 @@
+package: models
+output: internal/models/models.gen.go
+# Models-only generation: NO server, client, or spec embedding.
+generate:
+  models: true
+output-options:
+  skip-prune: true
