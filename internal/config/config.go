@@ -1,0 +1,156 @@
+package config
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/joho/godotenv"
+)
+
+type Config struct {
+	Port               string
+	AppBaseURL         string
+	MongoURI           string
+	MongoDB            string
+	JWTSecret          string
+	JWTAccess          time.Duration
+	JWTRefresh         time.Duration
+	GmailUser          string
+	GmailPass          string
+	SMTPHost           string
+	SMTPPort           string
+	LogLevel           slog.Level
+	SeedAdminEmail     string
+	SeedAdminPassword  string
+	SeedAdminName      string
+	OverdueCron        string
+	QRLogoPath         string
+	FrontendBaseURL    string
+	StorageBaseDir     string
+	AttachmentSweepCron string
+	AttachmentMaxBytes int64
+	AttachmentMaxPerRequest int
+}
+
+func Load() (*Config, error) {
+	// .env is optional — env vars from the shell win regardless.
+	_ = godotenv.Load()
+
+	cfg := &Config{
+		Port:       getEnv("PORT", "8080"),
+		AppBaseURL: getEnv("APP_BASE_URL", "http://localhost:8080"),
+		MongoURI:   os.Getenv("MONGO_URI"),
+		MongoDB:    os.Getenv("MONGO_DB"),
+		JWTSecret:  os.Getenv("JWT_SECRET"),
+		GmailUser:  os.Getenv("GMAIL_USER"),
+		GmailPass:  os.Getenv("GMAIL_APP_PASSWORD"),
+		SMTPHost:   getEnv("SMTP_HOST", "smtp.gmail.com"),
+		SMTPPort:   getEnv("SMTP_PORT", "587"),
+
+		SeedAdminEmail:    os.Getenv("SEED_ADMIN_EMAIL"),
+		SeedAdminPassword: os.Getenv("SEED_ADMIN_PASSWORD"),
+		SeedAdminName:     getEnv("SEED_ADMIN_NAME", "Admin"),
+
+		OverdueCron: getEnv("OVERDUE_CRON", "0 9 * * *"),
+
+		// Optional override for the QR center logo. If empty, the embedded
+		// default logo (internal/qr/assets/logo.png) is used.
+		QRLogoPath: os.Getenv("QR_LOGO_PATH"),
+	}
+
+	var err error
+	cfg.StorageBaseDir = getEnv("STORAGE_BASE_DIR", "/var/lib/imp/attachments")
+	cfg.AttachmentSweepCron = getEnv("ATTACHMENT_SWEEP_CRON", "0 3 * * *")
+
+	if cfg.AttachmentMaxBytes, err = parseInt64("ATTACHMENT_MAX_BYTES", "10485760"); err != nil {
+		return nil, err
+	}
+	if cfg.AttachmentMaxPerRequest, err = parseInt("ATTACHMENT_MAX_PER_REQ", "5"); err != nil {
+		return nil, err
+	}
+
+	// FrontendBaseURL is the host scanned QR codes and email links resolve
+	// to — the public web app, NOT the API. Falls back to APP_BASE_URL so
+	// existing dev setups keep working until the frontend gets its own URL.
+	cfg.FrontendBaseURL = getEnv("FRONTEND_BASE_URL", cfg.AppBaseURL)
+	if cfg.JWTAccess, err = parseDuration("JWT_ACCESS_TTL", "15m"); err != nil {
+		return nil, err
+	}
+	if cfg.JWTRefresh, err = parseDuration("JWT_REFRESH_TTL", "720h"); err != nil {
+		return nil, err
+	}
+	cfg.LogLevel = parseLogLevel(getEnv("LOG_LEVEL", "info"))
+
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (c *Config) validate() error {
+	var missing []string
+	if c.MongoURI == "" {
+		missing = append(missing, "MONGO_URI")
+	}
+	if c.MongoDB == "" {
+		missing = append(missing, "MONGO_DB")
+	}
+	if c.JWTSecret == "" {
+		missing = append(missing, "JWT_SECRET")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required env vars: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func getEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func parseDuration(key, fallback string) (time.Duration, error) {
+	raw := getEnv(key, fallback)
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %s=%q: %w", key, raw, err)
+	}
+	return d, nil
+}
+
+func parseLogLevel(s string) slog.Level {
+	switch strings.ToLower(s) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
+
+func parseInt64(key, fallback string) (int64, error) {
+	raw := getEnv(key, fallback)
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid int64 %s=%q: %w", key, raw, err)
+	}
+	return n, nil
+}
+
+func parseInt(key, fallback string) (int, error) {
+	raw := getEnv(key, fallback)
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid int %s=%q: %w", key, raw, err)
+	}
+	return n, nil
+}
