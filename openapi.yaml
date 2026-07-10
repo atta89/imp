@@ -1,0 +1,2544 @@
+openapi: 3.0.3
+info:
+  title: imp — Multi-Venue Inventory Management Platform
+  version: 0.1.0
+  description: |
+    Source of truth for every endpoint and every data shape in the imp backend.
+    See docs/prd.md for product context. Generated Go models live in
+    internal/models/models.gen.go — DO NOT hand-edit; change this file and run
+    `make generate`.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: local dev
+
+tags:
+  - name: auth
+  - name: venues
+  - name: categories
+  - name: departments
+  - name: users
+  - name: assets
+  - name: scan
+  - name: purchase-orders
+  - name: repairs
+  - name: reports
+  - name: notifications
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    PageParam:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    LimitParam:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 25 }
+    IdPath:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+    QrTokenPath:
+      name: qrToken
+      in: path
+      required: true
+      schema: { type: string }
+
+  responses:
+    ErrorResponse:
+      description: Error envelope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+
+    # ============================================================
+    # Helper types
+    # ============================================================
+
+    # ObjectId — a MongoDB ObjectID. Generated as `type ObjectId = bson.ObjectID`
+    # so the same struct serializes correctly for both API JSON and Mongo BSON.
+    #
+    # IMPORTANT: oapi-codegen drops vendor extensions when they sit as siblings
+    # of `$ref`. Whenever you need x-go-name or x-oapi-codegen-extra-tags on a
+    # property whose type is ObjectId (or any other $ref'd schema), wrap it as:
+    #   foo:
+    #     allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+    #     x-go-name: Foo
+    #     x-oapi-codegen-extra-tags: { bson: "foo,omitempty" }
+    ObjectId:
+      type: string
+      pattern: '^[0-9a-fA-F]{24}$'
+      x-go-type: bson.ObjectID
+      x-go-type-import:
+        path: go.mongodb.org/mongo-driver/v2/bson
+
+    Pagination:
+      type: object
+      required: [page, limit, total, totalPages]
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer, format: int64 }
+        totalPages: { type: integer }
+
+    Meta:
+      type: object
+      properties:
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    ErrorPayload:
+      type: object
+      required: [kind, message]
+      properties:
+        kind:
+          type: string
+          enum: [bad_request, unauthorized, forbidden, not_found, conflict, validation, internal, http_error]
+        message: { type: string }
+        fields:
+          type: object
+          additionalProperties: { type: string }
+
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorPayload' }
+
+    # ============================================================
+    # Attachment schemas
+    # ============================================================
+
+    Attachment:
+      type: object
+      description: Internal attachment record (not returned in full to any API caller).
+      required: [id, filename, contentType, size, uploadedBy, linked, createdAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        filename:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "filename" }
+        contentType:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "contentType" }
+        size:
+          type: integer
+          format: int64
+          x-oapi-codegen-extra-tags: { bson: "size" }
+        storageKey:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "storageKey" }
+        uploadedBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "uploadedBy" }
+        linked:
+          type: boolean
+          x-oapi-codegen-extra-tags: { bson: "linked" }
+        assetIds:
+          type: array
+          x-go-name: AssetIDs
+          x-oapi-codegen-extra-tags: { bson: "assetIds,omitempty" }
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        movementIds:
+          type: array
+          x-go-name: MovementIDs
+          x-oapi-codegen-extra-tags: { bson: "movementIds,omitempty" }
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        createdAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "createdAt" }
+        linkedAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "linkedAt,omitempty" }
+
+    AttachmentMeta:
+      type: object
+      description: Public attachment metadata embedded in history responses.
+      required: [id, filename, contentType, size]
+      properties:
+        id: { $ref: '#/components/schemas/ObjectId' }
+        filename: { type: string }
+        contentType: { type: string }
+        size: { type: integer, format: int64 }
+
+    AttachmentUploadResponse:
+      type: object
+      required: [attachmentId, filename, contentType, size]
+      properties:
+        attachmentId: { $ref: '#/components/schemas/ObjectId' }
+        filename: { type: string }
+        contentType: { type: string }
+        size: { type: integer, format: int64 }
+
+    AttachmentValidationError:
+      type: object
+      required: [attachmentId, ok]
+      properties:
+        attachmentId: { $ref: '#/components/schemas/ObjectId' }
+        ok: { type: boolean }
+        error:
+          type: string
+          enum: [not_found, not_owner, already_linked]
+
+    AttachmentValidationResponse:
+      type: object
+      description: |
+        Returned as the 400 body when action-time attachment validation fails.
+        The top-level 'attachments' array is only present for Phase-B failures
+        (per-attachment checks). Phase-A gate failures (too_many, duplicate_id)
+        return only the 'error' payload.
+      required: [error]
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorPayload'
+        attachments:
+          type: array
+          items: { $ref: '#/components/schemas/AttachmentValidationError' }
+
+    # ============================================================
+    # Enums
+    # ============================================================
+
+    Role:
+      type: string
+      enum: [admin, venue_manager, staff]
+
+    AssetStatus:
+      type: string
+      enum: [available, in_use, in_repair, retired, lost]
+
+    AssetCondition:
+      type: string
+      enum: [new, good, fair, poor]
+
+    MovementType:
+      type: string
+      enum: [transfer, status_change, custody_change, condition_change, repair_in, repair_out]
+
+    RepairStatus:
+      type: string
+      enum: [open, in_progress, completed, unrepairable]
+
+    PurchaseOrderStatus:
+      type: string
+      enum: [draft, ordered, received, cancelled]
+
+    NotificationType:
+      type: string
+      enum: [overdue, custody_change, transfer, repair_update]
+
+    NotificationStatus:
+      type: string
+      enum: [queued, sent, failed]
+
+    NotificationChannel:
+      type: string
+      enum: [email]
+
+    CustomFieldType:
+      type: string
+      enum: [string, number, boolean, date]
+
+    # ============================================================
+    # Collection: User
+    # ============================================================
+
+    User:
+      type: object
+      required: [id, name, email, passwordHash, role, position, venueIds, notifyByEmail, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        name:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "name" }
+        email:
+          type: string
+          format: email
+          x-oapi-codegen-extra-tags: { bson: "email" }
+        passwordHash:
+          type: string
+          x-go-name: PasswordHash
+          x-oapi-codegen-extra-tags: { bson: "passwordHash", json: "-" }
+        role:
+          allOf: [ { $ref: '#/components/schemas/Role' } ]
+          x-oapi-codegen-extra-tags: { bson: "role" }
+        position:
+          type: string
+          description: 'Job title, e.g. "IT Staff", "Event Manager"'
+          x-oapi-codegen-extra-tags: { bson: "position" }
+        venueIds:
+          type: array
+          x-go-name: VenueIDs
+          x-oapi-codegen-extra-tags: { bson: "venueIds" }
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        notifyByEmail:
+          type: boolean
+          x-oapi-codegen-extra-tags: { bson: "notifyByEmail" }
+        phone:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "phone,omitempty" }
+        isActive:
+          type: boolean
+          x-oapi-codegen-extra-tags: { bson: "isActive" }
+        createdAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "createdAt" }
+        updatedAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "updatedAt" }
+
+    ScanUserContact:
+      description: >-
+        Responsible person shown on the authenticated scan view. Every viewer
+        is authenticated AND authorized for the asset, so full contact details
+        (email/phone) are included.
+      type: object
+      required: [id, name, role, position, email]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        position: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string }
+
+    # ============================================================
+    # Collection: Venue
+    # ============================================================
+
+    Venue:
+      type: object
+      required: [id, name, code, type, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        code: { type: string, x-oapi-codegen-extra-tags: { bson: "code" } }
+        address: { type: string, x-oapi-codegen-extra-tags: { bson: "address,omitempty" } }
+        city: { type: string, x-oapi-codegen-extra-tags: { bson: "city,omitempty" } }
+        type: { type: string, x-oapi-codegen-extra-tags: { bson: "type" } }
+        isActive: { type: boolean, x-oapi-codegen-extra-tags: { bson: "isActive" } }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    # ============================================================
+    # Collection: Category
+    # ============================================================
+
+    CategoryCustomField:
+      type: object
+      required: [key, label, type, required]
+      properties:
+        key: { type: string, x-oapi-codegen-extra-tags: { bson: "key" } }
+        label: { type: string, x-oapi-codegen-extra-tags: { bson: "label" } }
+        type:
+          allOf: [ { $ref: '#/components/schemas/CustomFieldType' } ]
+          x-oapi-codegen-extra-tags: { bson: "type" }
+        required: { type: boolean, x-oapi-codegen-extra-tags: { bson: "required" } }
+
+    Category:
+      type: object
+      required: [id, name, slug, customFields, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        slug: { type: string, x-oapi-codegen-extra-tags: { bson: "slug" } }
+        description: { type: string, x-oapi-codegen-extra-tags: { bson: "description,omitempty" } }
+        customFields:
+          type: array
+          x-oapi-codegen-extra-tags: { bson: "customFields" }
+          items: { $ref: '#/components/schemas/CategoryCustomField' }
+        isActive: { type: boolean, x-oapi-codegen-extra-tags: { bson: "isActive" } }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    # ============================================================
+    # Collection: Department
+    # ============================================================
+
+    Department:
+      type: object
+      required: [id, venueId, name, code, isActive, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        venueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: VenueID
+          x-oapi-codegen-extra-tags: { bson: "venueId" }
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        code: { type: string, x-oapi-codegen-extra-tags: { bson: "code" } }
+        description: { type: string, x-oapi-codegen-extra-tags: { bson: "description,omitempty" } }
+        isActive: { type: boolean, x-oapi-codegen-extra-tags: { bson: "isActive" } }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    # ============================================================
+    # Collection: Asset
+    # ============================================================
+
+    Asset:
+      type: object
+      required:
+        - id
+        - assetTag
+        - qrToken
+        - name
+        - categoryId
+        - homeVenueId
+        - currentVenueId
+        - status
+        - condition
+        - isOverdue
+        - isActive
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        assetTag: { type: string, x-oapi-codegen-extra-tags: { bson: "assetTag" } }
+        qrToken: { type: string, x-oapi-codegen-extra-tags: { bson: "qrToken" } }
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        categoryId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CategoryID
+          x-oapi-codegen-extra-tags: { bson: "categoryId" }
+        homeVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: HomeVenueID
+          x-oapi-codegen-extra-tags: { bson: "homeVenueId" }
+        currentVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CurrentVenueID
+          x-oapi-codegen-extra-tags: { bson: "currentVenueId" }
+        departmentId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: DepartmentID
+          x-oapi-codegen-extra-tags: { bson: "departmentId,omitempty" }
+        status:
+          allOf: [ { $ref: '#/components/schemas/AssetStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "status" }
+        condition:
+          allOf: [ { $ref: '#/components/schemas/AssetCondition' } ]
+          x-oapi-codegen-extra-tags: { bson: "condition" }
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+          x-oapi-codegen-extra-tags: { bson: "responsibleUserId,omitempty" }
+        purchaseOrderId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: PurchaseOrderID
+          x-oapi-codegen-extra-tags: { bson: "purchaseOrderId,omitempty" }
+        purchaseDate: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "purchaseDate,omitempty" } }
+        serialNumber: { type: string, x-oapi-codegen-extra-tags: { bson: "serialNumber,omitempty" } }
+        specs:
+          type: object
+          description: Free-form map of category-defined custom fields.
+          additionalProperties: true
+          x-oapi-codegen-extra-tags: { bson: "specs,omitempty" }
+        photos:
+          type: array
+          x-oapi-codegen-extra-tags: { bson: "photos,omitempty" }
+          items: { type: string }
+        expectedReturnDate: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "expectedReturnDate,omitempty" } }
+        isOverdue: { type: boolean, x-oapi-codegen-extra-tags: { bson: "isOverdue" } }
+        notes: { type: string, x-oapi-codegen-extra-tags: { bson: "notes,omitempty" } }
+        isActive: { type: boolean, x-oapi-codegen-extra-tags: { bson: "isActive" } }
+        importJobId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ImportJobID
+          x-oapi-codegen-extra-tags: { bson: "importJobId,omitempty" }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    ScanAssetView:
+      description: >-
+        Read-only asset view returned by the authenticated scan endpoint. Carries
+        no attachment data — attachment metadata is exclusive to
+        GET /assets/{id}/history.
+      type: object
+      required: [asset]
+      properties:
+        asset: { $ref: '#/components/schemas/Asset' }
+        responsiblePerson: { $ref: '#/components/schemas/ScanUserContact' }
+        homeVenueName: { type: string }
+        currentVenueName: { type: string }
+        categoryName: { type: string }
+        departmentName: { type: string }
+
+    # ============================================================
+    # Collection: PurchaseOrder
+    # ============================================================
+
+    PurchaseOrderSupplier:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        contact: { type: string, x-oapi-codegen-extra-tags: { bson: "contact,omitempty" } }
+
+    PurchaseOrderLineItem:
+      type: object
+      required: [categoryId, name, quantity]
+      properties:
+        categoryId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CategoryID
+          x-oapi-codegen-extra-tags: { bson: "categoryId" }
+        name: { type: string, x-oapi-codegen-extra-tags: { bson: "name" } }
+        quantity: { type: integer, minimum: 1, x-oapi-codegen-extra-tags: { bson: "quantity" } }
+
+    PurchaseOrder:
+      type: object
+      required: [id, poNumber, supplier, responsibleUserId, orderDate, status, lineItems, createdBy, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        poNumber:
+          type: string
+          x-go-name: PONumber
+          x-oapi-codegen-extra-tags: { bson: "poNumber" }
+        supplier:
+          allOf: [ { $ref: '#/components/schemas/PurchaseOrderSupplier' } ]
+          x-oapi-codegen-extra-tags: { bson: "supplier" }
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+          x-oapi-codegen-extra-tags: { bson: "responsibleUserId" }
+        orderDate: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "orderDate" } }
+        receivedDate: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "receivedDate,omitempty" } }
+        status:
+          allOf: [ { $ref: '#/components/schemas/PurchaseOrderStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "status" }
+        lineItems:
+          type: array
+          x-oapi-codegen-extra-tags: { bson: "lineItems" }
+          items: { $ref: '#/components/schemas/PurchaseOrderLineItem' }
+        attachments:
+          type: array
+          x-oapi-codegen-extra-tags: { bson: "attachments,omitempty" }
+          items: { type: string }
+        notes: { type: string, x-oapi-codegen-extra-tags: { bson: "notes,omitempty" } }
+        createdBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "createdBy" }
+        importJobId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ImportJobID
+          x-oapi-codegen-extra-tags: { bson: "importJobId,omitempty" }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    # ============================================================
+    # Collection: Movement (audit trail per asset)
+    # ============================================================
+
+    Movement:
+      type: object
+      required: [id, assetId, type, performedBy, performedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        assetId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: AssetID
+          x-oapi-codegen-extra-tags: { bson: "assetId" }
+        type:
+          allOf: [ { $ref: '#/components/schemas/MovementType' } ]
+          x-oapi-codegen-extra-tags: { bson: "type" }
+        fromVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: FromVenueID
+          x-oapi-codegen-extra-tags: { bson: "fromVenueId,omitempty" }
+        toVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ToVenueID
+          x-oapi-codegen-extra-tags: { bson: "toVenueId,omitempty" }
+        fromStatus:
+          allOf: [ { $ref: '#/components/schemas/AssetStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "fromStatus,omitempty" }
+        toStatus:
+          allOf: [ { $ref: '#/components/schemas/AssetStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "toStatus,omitempty" }
+        fromCondition:
+          allOf: [ { $ref: '#/components/schemas/AssetCondition' } ]
+          x-oapi-codegen-extra-tags: { bson: "fromCondition,omitempty" }
+        toCondition:
+          allOf: [ { $ref: '#/components/schemas/AssetCondition' } ]
+          x-oapi-codegen-extra-tags: { bson: "toCondition,omitempty" }
+        fromUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: FromUserID
+          x-oapi-codegen-extra-tags: { bson: "fromUserId,omitempty" }
+        toUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ToUserID
+          x-oapi-codegen-extra-tags: { bson: "toUserId,omitempty" }
+        reason: { type: string, x-oapi-codegen-extra-tags: { bson: "reason,omitempty" } }
+        notes: { type: string, x-oapi-codegen-extra-tags: { bson: "notes,omitempty" } }
+        attachmentIds:
+          type: array
+          x-go-name: AttachmentIDs
+          x-oapi-codegen-extra-tags: { bson: "attachmentIds,omitempty" }
+          items: { $ref: '#/components/schemas/ObjectId' }
+        attachments:
+          type: array
+          description: Populated only in history responses via server-side enrichment; never persisted.
+          x-oapi-codegen-extra-tags: { bson: "-" }
+          items: { $ref: '#/components/schemas/AttachmentMeta' }
+        expectedReturnDate: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "expectedReturnDate,omitempty" } }
+        performedBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "performedBy" }
+        performedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "performedAt" } }
+
+    # ============================================================
+    # Collection: Repair
+    # ============================================================
+
+    Repair:
+      type: object
+      required: [id, assetId, issue, reportedBy, reportedAt, status, createdAt, updatedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        assetId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: AssetID
+          x-oapi-codegen-extra-tags: { bson: "assetId" }
+        issue: { type: string, x-oapi-codegen-extra-tags: { bson: "issue" } }
+        reportedBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "reportedBy" }
+        reportedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "reportedAt" } }
+        status:
+          allOf: [ { $ref: '#/components/schemas/RepairStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "status" }
+        vendor: { type: string, x-oapi-codegen-extra-tags: { bson: "vendor,omitempty" } }
+        sentAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "sentAt,omitempty" } }
+        returnedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "returnedAt,omitempty" } }
+        resolution: { type: string, x-oapi-codegen-extra-tags: { bson: "resolution,omitempty" } }
+        notes: { type: string, x-oapi-codegen-extra-tags: { bson: "notes,omitempty" } }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+        updatedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "updatedAt" } }
+
+    # ============================================================
+    # Collection: Notification (outbox)
+    # ============================================================
+
+    Notification:
+      type: object
+      required: [id, type, recipientUserId, recipientEmail, subject, body, channel, status, attempts, createdAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        type:
+          allOf: [ { $ref: '#/components/schemas/NotificationType' } ]
+          x-oapi-codegen-extra-tags: { bson: "type" }
+        recipientUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: RecipientUserID
+          x-oapi-codegen-extra-tags: { bson: "recipientUserId" }
+        recipientEmail:
+          type: string
+          format: email
+          description: 'Snapshotted at enqueue time so worker sends do not need a DB lookup.'
+          x-oapi-codegen-extra-tags: { bson: "recipientEmail" }
+        subject:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "subject" }
+        body:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "body" }
+        assetId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: AssetID
+          x-oapi-codegen-extra-tags: { bson: "assetId,omitempty" }
+        channel:
+          allOf: [ { $ref: '#/components/schemas/NotificationChannel' } ]
+          x-oapi-codegen-extra-tags: { bson: "channel" }
+        status:
+          allOf: [ { $ref: '#/components/schemas/NotificationStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "status" }
+        attempts: { type: integer, x-oapi-codegen-extra-tags: { bson: "attempts" } }
+        sentAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "sentAt,omitempty" } }
+        error: { type: string, x-oapi-codegen-extra-tags: { bson: "error,omitempty" } }
+        createdAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "createdAt" } }
+
+    # ============================================================
+    # Collection: AuditLog
+    # ============================================================
+
+    AuditLog:
+      type: object
+      required: [id, entityType, entityId, action, performedBy, performedAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        entityType: { type: string, x-oapi-codegen-extra-tags: { bson: "entityType" } }
+        entityId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: EntityID
+          x-oapi-codegen-extra-tags: { bson: "entityId" }
+        action: { type: string, x-oapi-codegen-extra-tags: { bson: "action" } }
+        changes:
+          type: object
+          additionalProperties: true
+          x-oapi-codegen-extra-tags: { bson: "changes,omitempty" }
+        performedBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "performedBy" }
+        performedAt: { type: string, format: date-time, x-oapi-codegen-extra-tags: { bson: "performedAt" } }
+        ip: { type: string, x-oapi-codegen-extra-tags: { bson: "ip,omitempty" } }
+
+    # ============================================================
+    # Auth DTOs
+    # ============================================================
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 1 }
+
+    RefreshRequest:
+      type: object
+      required: [refreshToken]
+      properties:
+        refreshToken: { type: string }
+
+    TokenPair:
+      type: object
+      required: [accessToken, refreshToken, accessExp, refreshExp]
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        accessExp: { type: integer, format: int64, description: unix seconds }
+        refreshExp: { type: integer, format: int64, description: unix seconds }
+
+    AuthResponse:
+      type: object
+      required: [user, tokens]
+      properties:
+        user: { $ref: '#/components/schemas/User' }
+        tokens: { $ref: '#/components/schemas/TokenPair' }
+
+    # ============================================================
+    # Request DTOs (create/update)
+    # ============================================================
+
+    CreateVenueRequest:
+      type: object
+      required: [name, code, type]
+      properties:
+        name: { type: string }
+        code: { type: string }
+        address: { type: string }
+        city: { type: string }
+        type: { type: string }
+        isActive: { type: boolean, default: true }
+
+    UpdateVenueRequest:
+      type: object
+      properties:
+        name: { type: string }
+        code: { type: string }
+        address: { type: string }
+        city: { type: string }
+        type: { type: string }
+        isActive: { type: boolean }
+
+    CreateCategoryRequest:
+      type: object
+      required: [name, slug]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        customFields:
+          type: array
+          items: { $ref: '#/components/schemas/CategoryCustomField' }
+        isActive: { type: boolean, default: true }
+
+    UpdateCategoryRequest:
+      type: object
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        description: { type: string }
+        customFields:
+          type: array
+          items: { $ref: '#/components/schemas/CategoryCustomField' }
+        isActive: { type: boolean }
+
+    CreateDepartmentRequest:
+      type: object
+      required: [name, code]
+      properties:
+        name: { type: string }
+        code: { type: string }
+        description: { type: string }
+        isActive: { type: boolean, default: true }
+
+    UpdateDepartmentRequest:
+      type: object
+      properties:
+        name: { type: string }
+        code: { type: string }
+        description: { type: string }
+        isActive: { type: boolean }
+
+    CreateUserRequest:
+      type: object
+      required: [name, email, password, role, position]
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 72 }
+        role: { $ref: '#/components/schemas/Role' }
+        position: { type: string }
+        venueIds:
+          type: array
+          x-go-name: VenueIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        notifyByEmail: { type: boolean, default: true }
+        phone: { type: string }
+
+    UpdateUserRequest:
+      type: object
+      properties:
+        name: { type: string }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, maxLength: 72 }
+        role: { $ref: '#/components/schemas/Role' }
+        position: { type: string }
+        venueIds:
+          type: array
+          x-go-name: VenueIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        notifyByEmail: { type: boolean }
+        phone: { type: string }
+        isActive: { type: boolean }
+
+    UpdateNotificationPreferencesRequest:
+      type: object
+      required: [notifyByEmail]
+      properties:
+        notifyByEmail: { type: boolean }
+
+    ChangePasswordRequest:
+      type: object
+      required: [current, next]
+      properties:
+        current:
+          type: string
+          minLength: 1
+          description: 'The caller''s current password, used to re-authenticate the change.'
+        next:
+          type: string
+          minLength: 8
+          maxLength: 72
+          description: 'The new password. 8-72 characters (bcrypt''s 72-byte ceiling).'
+
+    CreateAssetRequest:
+      type: object
+      required: [name, categoryId, homeVenueId, condition]
+      properties:
+        name: { type: string }
+        categoryId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CategoryID
+        homeVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: HomeVenueID
+        currentVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CurrentVenueID
+        departmentId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: DepartmentID
+        condition: { $ref: '#/components/schemas/AssetCondition' }
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+        purchaseOrderId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: PurchaseOrderID
+        purchaseDate: { type: string, format: date-time }
+        serialNumber: { type: string }
+        specs: { type: object, additionalProperties: true }
+        photos: { type: array, items: { type: string } }
+        notes: { type: string }
+
+    UpdateAssetRequest:
+      type: object
+      properties:
+        name: { type: string }
+        categoryId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: CategoryID
+        homeVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: HomeVenueID
+        departmentId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: DepartmentID
+        condition: { $ref: '#/components/schemas/AssetCondition' }
+        serialNumber: { type: string }
+        specs: { type: object, additionalProperties: true }
+        photos: { type: array, items: { type: string } }
+        notes: { type: string }
+        isActive: { type: boolean }
+
+    TransferAssetRequest:
+      type: object
+      required: [toVenueId]
+      properties:
+        toVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ToVenueID
+        expectedReturnDate:
+          type: string
+          format: date-time
+          description: 'If set, the asset is a temporary transfer subject to overdue checks.'
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    StatusChangeRequest:
+      type: object
+      required: [status]
+      properties:
+        status: { $ref: '#/components/schemas/AssetStatus' }
+        reason: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    ConditionUpdate:
+      type: object
+      required: [condition]
+      properties:
+        condition: { $ref: '#/components/schemas/AssetCondition' }
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    AssignCustodyRequest:
+      type: object
+      required: [responsibleUserId]
+      properties:
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    BulkQrRequest:
+      type: object
+      required: [assetIds]
+      properties:
+        assetIds:
+          type: array
+          minItems: 1
+          x-go-name: AssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+
+    BulkTransferRequest:
+      type: object
+      required: [assetIds, toVenueId]
+      properties:
+        assetIds:
+          type: array
+          minItems: 1
+          x-go-name: AssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        toVenueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ToVenueID
+        expectedReturnDate:
+          type: string
+          format: date-time
+          description: 'Applied to every asset in the batch that is NOT returning to its home venue.'
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    BulkStatusRequest:
+      type: object
+      required: [assetIds, status]
+      properties:
+        assetIds:
+          type: array
+          minItems: 1
+          x-go-name: AssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        status: { $ref: '#/components/schemas/AssetStatus' }
+        reason: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    BulkAssignRequest:
+      type: object
+      required: [assetIds, responsibleUserId]
+      properties:
+        assetIds:
+          type: array
+          minItems: 1
+          x-go-name: AssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    BulkActionResult:
+      type: object
+      required: [assetId, ok]
+      properties:
+        assetId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: AssetID
+        ok: { type: boolean }
+        error:
+          type: string
+          description: 'Present iff ok=false. Per-row reason: not_found, forbidden, invalid_transition, dest_venue_forbidden, etc.'
+
+    BulkActionResponse:
+      type: object
+      required: [total, succeeded, failed, results]
+      properties:
+        total: { type: integer }
+        succeeded: { type: integer }
+        failed: { type: integer }
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/BulkActionResult' }
+
+    BulkAssignResponse:
+      type: object
+      required: [total, updated, skippedNoOp, results]
+      properties:
+        total: { type: integer }
+        updated:
+          type: integer
+          description: 'Assets whose responsibleUserId changed; one custody_change Movement was written for each.'
+        skippedNoOp:
+          type: integer
+          description: 'Assets already assigned to responsibleUserId; no movement written.'
+        results:
+          type: array
+          items: { $ref: '#/components/schemas/BulkActionResult' }
+
+    BulkConditionUpdate:
+      type: object
+      required: [assetIds, condition]
+      properties:
+        assetIds:
+          type: array
+          minItems: 1
+          x-go-name: AssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+        condition: { $ref: '#/components/schemas/AssetCondition' }
+        notes: { type: string }
+        attachmentIds:
+          type: array
+          maxItems: 5
+          uniqueItems: true
+          x-go-name: AttachmentIDs
+          items: { $ref: '#/components/schemas/ObjectId' }
+
+    BulkConditionSkipped:
+      type: object
+      required: [id, reason]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+        reason:
+          type: string
+          description: 'One of: not_found, forbidden, unchanged.'
+
+    BulkConditionResult:
+      type: object
+      required: [updated, skipped]
+      properties:
+        updated: { type: integer }
+        skipped:
+          type: array
+          items: { $ref: '#/components/schemas/BulkConditionSkipped' }
+
+    CreatePurchaseOrderRequest:
+      type: object
+      required: [poNumber, supplier, responsibleUserId, orderDate, lineItems]
+      properties:
+        poNumber: { type: string, x-go-name: PONumber }
+        supplier: { $ref: '#/components/schemas/PurchaseOrderSupplier' }
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+        orderDate: { type: string, format: date-time }
+        lineItems:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/PurchaseOrderLineItem' }
+        attachments: { type: array, items: { type: string } }
+        notes: { type: string }
+
+    UpdatePurchaseOrderRequest:
+      type: object
+      properties:
+        poNumber: { type: string, x-go-name: PONumber }
+        supplier: { $ref: '#/components/schemas/PurchaseOrderSupplier' }
+        responsibleUserId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ResponsibleUserID
+        orderDate: { type: string, format: date-time }
+        lineItems:
+          type: array
+          items: { $ref: '#/components/schemas/PurchaseOrderLineItem' }
+        attachments: { type: array, items: { type: string } }
+        notes: { type: string }
+        status: { $ref: '#/components/schemas/PurchaseOrderStatus' }
+
+    ReceivePurchaseOrderRequest:
+      type: object
+      required: [venueId]
+      properties:
+        venueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: VenueID
+          description: 'Home venue for every asset generated by this receive.'
+        departmentId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: DepartmentID
+          description: 'Optional home department for every asset generated by this receive. Must belong to venueId.'
+
+    ReceivePurchaseOrderResponse:
+      type: object
+      required: [purchaseOrder, generatedAssetIds]
+      properties:
+        purchaseOrder: { $ref: '#/components/schemas/PurchaseOrder' }
+        generatedAssetIds:
+          type: array
+          x-go-name: GeneratedAssetIDs
+          items:
+            allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+
+    CreateRepairRequest:
+      type: object
+      required: [assetId, issue]
+      properties:
+        assetId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: AssetID
+        issue: { type: string }
+        vendor: { type: string }
+        notes: { type: string }
+
+    UpdateRepairRequest:
+      type: object
+      properties:
+        status: { $ref: '#/components/schemas/RepairStatus' }
+        vendor: { type: string }
+        sentAt: { type: string, format: date-time }
+        returnedAt: { type: string, format: date-time }
+        resolution: { type: string }
+        notes: { type: string }
+
+    # ============================================================
+    # Dashboard + reports
+    # ============================================================
+
+    DashboardVenueCount:
+      type: object
+      required: [venueId, venueName, count]
+      properties:
+        venueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: VenueID
+        venueName: { type: string }
+        count: { type: integer }
+
+    DashboardSummary:
+      type: object
+      required: [totalAssets, byStatus, byVenue, awayFromHome, inRepair, overdue]
+      properties:
+        totalAssets: { type: integer }
+        byStatus:
+          type: object
+          additionalProperties: { type: integer }
+        byVenue:
+          type: array
+          items: { $ref: '#/components/schemas/DashboardVenueCount' }
+        awayFromHome: { type: integer }
+        inRepair: { type: integer }
+        overdue: { type: integer }
+
+    InventoryByVenueRow:
+      type: object
+      required: [venueId, venueName, total]
+      properties:
+        venueId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: VenueID
+        venueName: { type: string }
+        total: { type: integer }
+        byStatus:
+          type: object
+          additionalProperties: { type: integer }
+        byDepartment:
+          type: array
+          items: { $ref: '#/components/schemas/DepartmentAssetCountRow' }
+
+    DepartmentAssetCountRow:
+      type: object
+      required: [departmentId, departmentName, count]
+      properties:
+        departmentId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: DepartmentID
+        departmentName: { type: string }
+        count: { type: integer }
+
+    AssetsByResponsibleRow:
+      type: object
+      required: [userId, userName, count]
+      properties:
+        userId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: UserID
+        userName: { type: string }
+        position: { type: string }
+        count: { type: integer }
+
+    # ============================================================
+    # Bulk PO import (PRD §6.12)
+    # ============================================================
+
+    ImportJobStatus:
+      type: string
+      enum: [validating, preview_ready, importing, completed, failed, rolled_back]
+
+    ImportConflictPolicy:
+      type: string
+      enum: [error, skipExisting]
+
+    ImportJobOptions:
+      type: object
+      properties:
+        onConflict:
+          allOf: [ { $ref: '#/components/schemas/ImportConflictPolicy' } ]
+          description: 'Behaviour when a poNumber already exists. Default: error.'
+          x-oapi-codegen-extra-tags: { bson: "onConflict,omitempty" }
+        importValidOnly:
+          type: boolean
+          description: 'If true, commit valid rows and skip errored ones rather than rejecting the whole job.'
+          x-oapi-codegen-extra-tags: { bson: "importValidOnly,omitempty" }
+
+    ImportJobCounts:
+      type: object
+      required: [posTotal, posCreated, assetsCreated, rowsSkipped, rowsErrored]
+      properties:
+        posTotal:      { type: integer, x-oapi-codegen-extra-tags: { bson: "posTotal" } }
+        posCreated:    { type: integer, x-oapi-codegen-extra-tags: { bson: "posCreated" } }
+        assetsCreated: { type: integer, x-oapi-codegen-extra-tags: { bson: "assetsCreated" } }
+        rowsSkipped:   { type: integer, x-oapi-codegen-extra-tags: { bson: "rowsSkipped" } }
+        rowsErrored:   { type: integer, x-oapi-codegen-extra-tags: { bson: "rowsErrored" } }
+
+    ImportRowError:
+      type: object
+      required: [row, message]
+      properties:
+        row:     { type: integer, description: '1-based row in the uploaded file (header = 1, first data row = 2).', x-oapi-codegen-extra-tags: { bson: "row" } }
+        field:   { type: string, x-oapi-codegen-extra-tags: { bson: "field,omitempty" } }
+        message: { type: string, x-oapi-codegen-extra-tags: { bson: "message" } }
+
+    ImportJob:
+      type: object
+      required: [id, filename, uploadedBy, status, options, counts, errors, createdAt]
+      properties:
+        id:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ID
+          x-oapi-codegen-extra-tags: { bson: "_id,omitempty" }
+        filename:
+          type: string
+          x-oapi-codegen-extra-tags: { bson: "filename" }
+        uploadedBy:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-oapi-codegen-extra-tags: { bson: "uploadedBy" }
+        status:
+          allOf: [ { $ref: '#/components/schemas/ImportJobStatus' } ]
+          x-oapi-codegen-extra-tags: { bson: "status" }
+        options:
+          allOf: [ { $ref: '#/components/schemas/ImportJobOptions' } ]
+          x-oapi-codegen-extra-tags: { bson: "options" }
+        counts:
+          allOf: [ { $ref: '#/components/schemas/ImportJobCounts' } ]
+          x-oapi-codegen-extra-tags: { bson: "counts" }
+        errors:
+          type: array
+          x-oapi-codegen-extra-tags: { bson: "errors" }
+          items: { $ref: '#/components/schemas/ImportRowError' }
+        createdAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "createdAt" }
+        completedAt:
+          type: string
+          format: date-time
+          x-oapi-codegen-extra-tags: { bson: "completedAt,omitempty" }
+
+    ImportPreviewPO:
+      type: object
+      required: [poNumber, lineItems, assetCount]
+      properties:
+        poNumber:   { type: string }
+        lineItems:  { type: integer }
+        assetCount: { type: integer }
+        categories:
+          type: array
+          items: { type: string }
+        venues:
+          type: array
+          items: { type: string }
+        skipExisting: { type: boolean }
+
+    ImportPreview:
+      type: object
+      required: [job, posPreview]
+      properties:
+        job: { $ref: '#/components/schemas/ImportJob' }
+        posPreview:
+          type: array
+          items: { $ref: '#/components/schemas/ImportPreviewPO' }
+
+    CommitImportRequest:
+      type: object
+      required: [importJobId]
+      properties:
+        importJobId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: ImportJobID
+        options:
+          allOf: [ { $ref: '#/components/schemas/ImportJobOptions' } ]
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---- Auth ----
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Email/password login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AuthResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+
+  /auth/me:
+    get:
+      tags: [auth]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+
+  # ---- Venues ----
+  /venues:
+    get:
+      tags: [venues]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Venue' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [venues]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateVenueRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Venue' }
+
+  /venues/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [venues]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Venue' }
+    put:
+      tags: [venues]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateVenueRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Venue' }
+    delete:
+      tags: [venues]
+      responses:
+        '204': { description: deleted }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  # ---- Categories ----
+  /categories:
+    get:
+      tags: [categories]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Category' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [categories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateCategoryRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Category' }
+
+  /categories/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [categories]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Category' }
+    put:
+      tags: [categories]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateCategoryRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Category' }
+    delete:
+      tags: [categories]
+      responses:
+        '204': { description: deleted }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  # ---- Departments (nested under venues) ----
+  /venues/{venueId}/departments:
+    parameters:
+      - name: venueId
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+    get:
+      tags: [departments]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Department' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [departments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateDepartmentRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Department' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  /venues/{venueId}/departments/{id}:
+    parameters:
+      - name: venueId
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+      - { $ref: '#/components/parameters/IdPath' }
+    get:
+      tags: [departments]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Department' }
+    put:
+      tags: [departments]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateDepartmentRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Department' }
+    delete:
+      tags: [departments]
+      responses:
+        '204': { description: deleted }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  # ---- Users ----
+  /users:
+    get:
+      tags: [users]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateUserRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+
+  /users/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [users]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+    put:
+      tags: [users]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateUserRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/User' }
+    delete:
+      tags: [users]
+      responses:
+        '204': { description: deleted }
+
+  # ---- Assets ----
+  /assets:
+    get:
+      tags: [assets]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: venue,        in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+        - { name: currentVenue, in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+        - { name: category,     in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+        - { name: department,   in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+        - { name: status,       in: query, schema: { $ref: '#/components/schemas/AssetStatus' } }
+        - { name: responsible,  in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+        - { name: away,         in: query, schema: { type: boolean } }
+        - { name: overdue,      in: query, schema: { type: boolean } }
+        - { name: q,            in: query, schema: { type: string }, description: free-text on name/serialNumber/assetTag }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateAssetRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+
+  /assets/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [assets]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+    put:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateAssetRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+    delete:
+      tags: [assets]
+      responses:
+        '204': { description: deleted }
+
+  /assets/{id}/history:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [assets]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Movement' }
+
+  /assets/{id}/transfer:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TransferAssetRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+
+  /assets/{id}/status:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StatusChangeRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  /assets/{id}/assign:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignCustodyRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+
+  /assets/{id}/condition:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConditionUpdate' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Asset' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  /assets/{id}/qr:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [assets]
+      responses:
+        '200':
+          description: QR label
+          content:
+            image/png: { schema: { type: string, format: binary } }
+            application/pdf: { schema: { type: string, format: binary } }
+
+  /assets/qr/bulk:
+    post:
+      tags: [assets]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkQrRequest' }
+      responses:
+        '200':
+          description: combined PDF of labels
+          content:
+            application/pdf: { schema: { type: string, format: binary } }
+
+  /assets/bulk/transfer:
+    post:
+      tags: [assets]
+      summary: 'Transfer many assets at once. Validates the whole batch up-front; on any row failure no DB change is made and per-row results are returned.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkTransferRequest' }
+      responses:
+        '200':
+          description: per-row results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BulkActionResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /assets/bulk/status:
+    post:
+      tags: [assets]
+      summary: 'Change status on many assets at once. Same all-or-nothing contract as bulk transfer.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkStatusRequest' }
+      responses:
+        '200':
+          description: per-row results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BulkActionResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /assets/bulk/assign:
+    post:
+      tags: [assets]
+      summary: 'Reassign the custodian on many assets at once. Same all-or-nothing contract as bulk transfer: any per-item failure aborts the batch and returns per-row diagnostics. Assets already assigned to the target user are silently skipped as no-ops. Exactly one digest email is enqueued to the new custodian listing all newly assigned assets.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkAssignRequest' }
+      responses:
+        '200':
+          description: batch summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BulkAssignResponse' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /assets/condition/bulk:
+    post:
+      tags: [assets]
+      summary: 'Set condition on many assets at once. BEST-EFFORT: each successful item is its own transaction; unaffected items are reported in skipped[] with a reason (not_found, forbidden, unchanged).'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkConditionUpdate' }
+      responses:
+        '200':
+          description: bulk summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/BulkConditionResult' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /attachments:
+    post:
+      tags: [assets]
+      summary: Upload a file, returns an unlinked attachment ID.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Upload accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/AttachmentUploadResponse' }
+        '400':
+          $ref: '#/components/responses/ErrorResponse'
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '413':
+          description: Payload too large.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /attachments/{id}/download:
+    get:
+      tags: [assets]
+      summary: Stream an attachment. Requires legitimate access to at least one linked asset.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { $ref: '#/components/schemas/ObjectId' }
+      responses:
+        '200':
+          description: File bytes.
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+
+  /scan/{qrToken}:
+    parameters: [ { $ref: '#/components/parameters/QrTokenPath' } ]
+    get:
+      tags: [scan]
+      security:
+        - bearerAuth: []
+      summary: >-
+        Resolve a scanned QR code to an asset view. Requires a valid JWT and
+        that the caller is authorized for the asset (admin, venue scope on the
+        asset's home or current venue, or the asset's current custodian).
+        Custodian contact details are shown in full. Resolves for lost/retired.
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ScanAssetView' }
+        '401':
+          $ref: '#/components/responses/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/ErrorResponse'
+        '404':
+          $ref: '#/components/responses/ErrorResponse'
+
+  # ---- Purchase orders ----
+  /purchase-orders:
+    get:
+      tags: [purchase-orders]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status,      in: query, schema: { $ref: '#/components/schemas/PurchaseOrderStatus' } }
+        - { name: responsible, in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/PurchaseOrder' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePurchaseOrderRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PurchaseOrder' }
+
+  /purchase-orders/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PurchaseOrder' }
+    put:
+      tags: [purchase-orders]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePurchaseOrderRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/PurchaseOrder' }
+
+  /purchase-orders/{id}/receive:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    post:
+      tags: [purchase-orders]
+      summary: Generates one asset per unit per line item in a single Mongo transaction.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReceivePurchaseOrderRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ReceivePurchaseOrderResponse' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  # ---- Bulk PO import (admin-only; PRD §6.12) ----
+  /imports/purchase-orders/template:
+    get:
+      tags: [purchase-orders]
+      summary: Download the CSV import template.
+      responses:
+        '200':
+          description: CSV template
+          content:
+            text/csv: { schema: { type: string, format: binary } }
+
+  /imports/purchase-orders/validate:
+    post:
+      tags: [purchase-orders]
+      summary: Dry-run a CSV/XLSX upload. Writes ImportJob with status=preview_ready. Creates no POs or assets.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:    { type: string, format: binary }
+                options: { type: string, description: 'JSON-encoded ImportJobOptions.' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ImportPreview' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
+  /imports/purchase-orders/commit:
+    post:
+      tags: [purchase-orders]
+      summary: Commit a previously-validated import. Creates POs + assets (one Mongo tx per PO). Notifications suppressed.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CommitImportRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ImportJob' }
+        '409': { $ref: '#/components/responses/ErrorResponse' }
+
+  /imports/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [purchase-orders]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ImportJob' }
+
+  /imports/{id}/report:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [purchase-orders]
+      summary: Downloadable CSV report of created POs + assets (with tags) and skipped/errored rows.
+      responses:
+        '200':
+          description: result csv
+          content:
+            text/csv: { schema: { type: string, format: binary } }
+
+  # ---- Repairs ----
+  /repairs:
+    get:
+      tags: [repairs]
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status,  in: query, schema: { $ref: '#/components/schemas/RepairStatus' } }
+        - { name: assetId, in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Repair' }
+                  meta: { $ref: '#/components/schemas/Meta' }
+    post:
+      tags: [repairs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateRepairRequest' }
+      responses:
+        '201':
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Repair' }
+
+  /repairs/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [repairs]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Repair' }
+    put:
+      tags: [repairs]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateRepairRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Repair' }
+
+  # ---- Dashboard + reports ----
+  /dashboard/summary:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/DashboardSummary' }
+
+  /reports/inventory-by-venue:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/InventoryByVenueRow' }
+
+  /reports/assets-away:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+
+  /reports/assets-overdue:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Asset' }
+
+  /reports/in-repair:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Repair' }
+
+  /reports/by-responsible:
+    get:
+      tags: [reports]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AssetsByResponsibleRow' }
+
+  /reports/by-department:
+    get:
+      tags: [reports]
+      parameters:
+        - { name: venue, in: query, schema: { type: string, pattern: '^[0-9a-fA-F]{24}$' }, description: 'Optional venue scope; when omitted, admins get all venues.' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/DepartmentAssetCountRow' }
+
+  # ---- Notifications / account ----
+  /me/password:
+    post:
+      tags: [auth]
+      summary: 'Change the caller''s password. Requires the current password.'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '204': { description: 'password changed' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+        '401': { $ref: '#/components/responses/ErrorResponse' }
+
+  /me/notification-preferences:
+    get:
+      tags: [notifications]
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      notifyByEmail: { type: boolean }
+    put:
+      tags: [notifications]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateNotificationPreferencesRequest' }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      notifyByEmail: { type: boolean }
+
+  /notifications:
+    get:
+      tags: [notifications]
+      summary: Outbox log (admin)
+      parameters:
+        - $ref: '#/components/parameters/PageParam'
+        - $ref: '#/components/parameters/LimitParam'
+        - { name: status, in: query, schema: { $ref: '#/components/schemas/NotificationStatus' } }
+      responses:
+        '200':
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Notification' }
+                  meta: { $ref: '#/components/schemas/Meta' }
