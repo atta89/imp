@@ -95,6 +95,12 @@ func Register(app *fiber.App, d Deps) {
 	authed.Post("/assets/condition/bulk", d.Assets.BulkCondition)
 	authed.Post("/assets/qr/bulk", d.Assets.QRBulk)
 
+	// Async bulk-job read endpoints. RBAC (requester-or-admin) is enforced in
+	// the handlers. Registered before "/assets/:id" so the static prefix wins.
+	authed.Get("/assets/bulk/jobs", d.Assets.BulkJobList)
+	authed.Get("/assets/bulk/jobs/:jobId", d.Assets.BulkJobGet)
+	authed.Get("/assets/bulk/jobs/:jobId/result", d.Assets.BulkJobResult)
+
 	authed.Get("/assets", d.Assets.List)
 	authed.Get("/assets/:id", d.Assets.Get)
 	authed.Get("/assets/:id/history", d.Assets.History)

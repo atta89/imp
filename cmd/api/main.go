@@ -15,6 +15,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	fiberrecover "github.com/gofiber/fiber/v2/middleware/recover"
 
+	"imp/internal/bulkjob"
 	"imp/internal/config"
 	"imp/internal/database"
 	"imp/internal/handler"
@@ -77,6 +78,7 @@ func run() error {
 	outboxRepo := notification.NewRepository(mongoConn.DB)
 	importJobRepo := repository.NewImportJobRepository(mongoConn.DB)
 	attRepo := repository.NewAttachmentRepository(mongoConn.DB)
+	bulkJobRepo := repository.NewBulkJobRepository(mongoConn.DB)
 
 	fs, err := storage.NewLocalDisk(cfg.StorageBaseDir)
 	if err != nil {
@@ -100,6 +102,14 @@ func run() error {
 		MaxPerRequest: cfg.AttachmentMaxPerRequest,
 	})
 	assetSvc := service.NewAssetService(assetRepo, movementRepo, venueRepo, categoryRepo, userRepo, departmentRepo, counterRepo, triggers, mongoConn.Client, cfg.FrontendBaseURL, qrLogo, attSvc)
+	bulkJobSvc := service.NewBulkJobService(assetSvc, bulkJobRepo, fs, service.BulkJobConfig{
+		MaxAssets:   cfg.BulkMaxAssets,
+		BatchSize:   cfg.BulkBatchSize,
+		MaxAttempts: cfg.BulkJobMaxAttempts,
+		ErrorCap:    cfg.BulkJobErrorCap,
+		Lease:       cfg.BulkJobLease,
+		ResultTTL:   cfg.BulkResultTTL,
+	}, logger)
 	poSvc := service.NewPurchaseOrderService(poRepo, assetRepo, movementRepo, counterRepo, venueRepo, categoryRepo, userRepo, departmentRepo, mongoConn.Client)
 	repairSvc := service.NewRepairService(repairRepo, assetRepo, movementRepo, triggers)
 	dashboardSvc := service.NewDashboardService(assetRepo, venueRepo)
@@ -119,7 +129,7 @@ func run() error {
 	venueH := handler.NewVenueHandler(venueSvc)
 	categoryH := handler.NewCategoryHandler(categorySvc)
 	departmentH := handler.NewDepartmentHandler(departmentSvc)
-	assetH := handler.NewAssetHandler(assetSvc)
+	assetH := handler.NewAssetHandler(assetSvc, bulkJobSvc)
 	scanH := handler.NewScanHandler(assetSvc)
 	poH := handler.NewPurchaseOrderHandler(poSvc)
 	importH := handler.NewImportHandler(importSvc, assetRepo, poRepo, venueRepo, categoryRepo, userRepo)
@@ -173,9 +183,17 @@ func run() error {
 	worker := notification.NewWorker(outboxRepo, mailer, logger, notification.WorkerConfig{})
 	go worker.Run(workerCtx)
 
+	// Async bulk-asset job worker — claims queued jobs and runs them in batched
+	// transactions. Same cancellable-context lifecycle as the outbox worker.
+	bulkWorker := bulkjob.NewWorker(bulkJobSvc, logger, bulkjob.Config{
+		Concurrency:  cfg.BulkWorkerConcurrency,
+		PollInterval: cfg.BulkWorkerPollInterval,
+	})
+	go bulkWorker.Run(workerCtx)
+
 	// Scheduler — daily overdue scan + digest. Start AFTER the worker so any
 	// digest enqueued by the first tick has somewhere to drain to.
-	sched := scheduler.New(overdueSvc, attSvc, logger, cfg.OverdueCron, cfg.AttachmentSweepCron)
+	sched := scheduler.New(overdueSvc, attSvc, bulkJobSvc, logger, cfg.OverdueCron, cfg.AttachmentSweepCron, cfg.BulkResultCleanupCron)
 	if err := sched.Start(); err != nil {
 		stopWorker()
 		_ = mongoConn.Close(context.Background())

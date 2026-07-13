@@ -13,6 +13,7 @@ const (
 	KindUnauthorized Kind = "unauthorized"
 	KindForbidden    Kind = "forbidden"
 	KindNotFound     Kind = "not_found"
+	KindGone         Kind = "gone"
 	KindConflict     Kind = "conflict"
 	KindValidation   Kind = "validation"
 	KindInternal     Kind = "internal"
@@ -34,13 +35,14 @@ func (e *Error) Error() string {
 
 func (e *Error) Unwrap() error { return e.Err }
 
-func New(kind Kind, msg string) *Error          { return &Error{Kind: kind, Message: msg} }
+func New(kind Kind, msg string) *Error             { return &Error{Kind: kind, Message: msg} }
 func Wrap(kind Kind, msg string, err error) *Error { return &Error{Kind: kind, Message: msg, Err: err} }
 
 func BadRequest(msg string) *Error   { return New(KindBadRequest, msg) }
 func Unauthorized(msg string) *Error { return New(KindUnauthorized, msg) }
 func Forbidden(msg string) *Error    { return New(KindForbidden, msg) }
 func NotFound(msg string) *Error     { return New(KindNotFound, msg) }
+func Gone(msg string) *Error         { return New(KindGone, msg) }
 func Conflict(msg string) *Error     { return New(KindConflict, msg) }
 func Internal(msg string, err error) *Error {
 	return &Error{Kind: KindInternal, Message: msg, Err: err}
@@ -60,6 +62,8 @@ func (e *Error) HTTPStatus() int {
 		return http.StatusForbidden
 	case KindNotFound:
 		return http.StatusNotFound
+	case KindGone:
+		return http.StatusGone
 	case KindConflict:
 		return http.StatusConflict
 	default:

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"time"
 
@@ -415,6 +416,50 @@ func (s *BulkJobService) EnqueueQR(ctx context.Context, performedBy bson.ObjectI
 
 func (s *BulkJobService) Get(ctx context.Context, id bson.ObjectID) (*repository.BulkJobDoc, error) {
 	return s.bulk.FindByID(ctx, id)
+}
+
+// CleanupExpiredResults deletes the rendered PDFs of qr jobs whose retention
+// window (ResultTTL) has elapsed and clears their storage key, so the /result
+// endpoint returns 410 afterwards. Returns the number of results cleaned. Run
+// from the daily cron. The job doc itself is retained for status queries.
+func (s *BulkJobService) CleanupExpiredResults(ctx context.Context) (int, error) {
+	if s.cfg.ResultTTL <= 0 {
+		return 0, nil
+	}
+	before := time.Now().UTC().Add(-s.cfg.ResultTTL)
+	docs, err := s.bulk.FindExpiredResults(ctx, before, 500)
+	if err != nil {
+		return 0, err
+	}
+	cleaned := 0
+	for i := range docs {
+		d := &docs[i]
+		if err := s.storage.Delete(ctx, d.ResultStorageKey); err != nil {
+			s.logger.Error("bulk_result_delete_bytes_failed", slog.String("job", d.ID.Hex()), slog.Any("err", err))
+			// Still clear the key so we don't retry forever; the sweep will
+			// eventually reconcile any leaked file.
+		}
+		if err := s.bulk.ClearResultKey(ctx, d.ID); err != nil {
+			s.logger.Error("bulk_result_clear_key_failed", slog.String("job", d.ID.Hex()), slog.Any("err", err))
+			continue
+		}
+		cleaned++
+	}
+	return cleaned, nil
+}
+
+// OpenResult opens the stored QR PDF for a completed qr job. The caller is
+// responsible for RBAC + readiness checks (see handler). Returns a ReadCloser
+// the caller must close.
+func (s *BulkJobService) OpenResult(ctx context.Context, job *repository.BulkJobDoc) (io.ReadCloser, error) {
+	if job.ResultStorageKey == "" {
+		return nil, apperror.Gone("job result has expired")
+	}
+	rc, err := s.storage.Get(ctx, job.ResultStorageKey)
+	if err != nil {
+		return nil, apperror.Internal("open job result", err)
+	}
+	return rc, nil
 }
 
 func (s *BulkJobService) List(ctx context.Context, status *models.BulkJobStatus, typ *models.BulkJobType, limit int64) ([]models.BulkJob, error) {

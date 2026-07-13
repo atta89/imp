@@ -4,8 +4,8 @@ import "github.com/gofiber/fiber/v2"
 
 // Envelope is the standard success response wrapper.
 type Envelope struct {
-	Data any         `json:"data"`
-	Meta *Meta       `json:"meta,omitempty"`
+	Data any   `json:"data"`
+	Meta *Meta `json:"meta,omitempty"`
 }
 
 type Meta struct {
@@ -36,6 +36,12 @@ func OK(c *fiber.Ctx, data any) error {
 
 func Created(c *fiber.Ctx, data any) error {
 	return c.Status(fiber.StatusCreated).JSON(Envelope{Data: data})
+}
+
+// Accepted (202) wraps a resource that has been accepted for asynchronous
+// processing — e.g. an enqueued BulkJob the caller polls for completion.
+func Accepted(c *fiber.Ctx, data any) error {
+	return c.Status(fiber.StatusAccepted).JSON(Envelope{Data: data})
 }
 
 func Paginated(c *fiber.Ctx, data any, p Pagination) error {

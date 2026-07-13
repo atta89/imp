@@ -15,24 +15,28 @@ import (
 )
 
 type Scheduler struct {
-	cron            *cron.Cron
-	overdue         *service.OverdueService
-	attachments     *service.AttachmentService
-	logger          *slog.Logger
-	overdueCron     string
-	attachmentCron  string
-	jobTimeout      time.Duration
+	cron           *cron.Cron
+	overdue        *service.OverdueService
+	attachments    *service.AttachmentService
+	bulkJobs       *service.BulkJobService
+	logger         *slog.Logger
+	overdueCron    string
+	attachmentCron string
+	bulkResultCron string
+	jobTimeout     time.Duration
 }
 
-func New(overdue *service.OverdueService, attachments *service.AttachmentService, logger *slog.Logger, overdueCron, attachmentCron string) *Scheduler {
+func New(overdue *service.OverdueService, attachments *service.AttachmentService, bulkJobs *service.BulkJobService, logger *slog.Logger, overdueCron, attachmentCron, bulkResultCron string) *Scheduler {
 	return &Scheduler{
-		cron:            cron.New(),
-		overdue:         overdue,
-		attachments:     attachments,
-		logger:          logger,
-		overdueCron:     overdueCron,
-		attachmentCron:  attachmentCron,
-		jobTimeout:      5 * time.Minute,
+		cron:           cron.New(),
+		overdue:        overdue,
+		attachments:    attachments,
+		bulkJobs:       bulkJobs,
+		logger:         logger,
+		overdueCron:    overdueCron,
+		attachmentCron: attachmentCron,
+		bulkResultCron: bulkResultCron,
+		jobTimeout:     5 * time.Minute,
 	}
 }
 
@@ -45,10 +49,16 @@ func (s *Scheduler) Start() error {
 	if _, err := s.cron.AddFunc(s.attachmentCron, s.runAttachmentSweep); err != nil {
 		return fmt.Errorf("register attachment sweep (%q): %w", s.attachmentCron, err)
 	}
+	if s.bulkJobs != nil && s.bulkResultCron != "" {
+		if _, err := s.cron.AddFunc(s.bulkResultCron, s.runBulkResultCleanup); err != nil {
+			return fmt.Errorf("register bulk result cleanup (%q): %w", s.bulkResultCron, err)
+		}
+	}
 	s.cron.Start()
 	s.logger.Info("scheduler_started",
 		slog.String("overdue_cron", s.overdueCron),
 		slog.String("attachment_cron", s.attachmentCron),
+		slog.String("bulk_result_cron", s.bulkResultCron),
 	)
 	return nil
 }
@@ -78,5 +88,18 @@ func (s *Scheduler) runAttachmentSweep() {
 	defer cancel()
 	if err := s.attachments.OrphanSweep(ctx); err != nil {
 		s.logger.Error("attachment_sweep_failed", slog.Any("err", err))
+	}
+}
+
+func (s *Scheduler) runBulkResultCleanup() {
+	ctx, cancel := context.WithTimeout(context.Background(), s.jobTimeout)
+	defer cancel()
+	n, err := s.bulkJobs.CleanupExpiredResults(ctx)
+	if err != nil {
+		s.logger.Error("bulk_result_cleanup_failed", slog.Any("err", err))
+		return
+	}
+	if n > 0 {
+		s.logger.Info("bulk_result_cleanup", slog.Int("cleaned", n))
 	}
 }

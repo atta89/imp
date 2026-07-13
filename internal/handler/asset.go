@@ -16,10 +16,11 @@ import (
 
 type AssetHandler struct {
 	assets *service.AssetService
+	bulk   *service.BulkJobService
 }
 
-func NewAssetHandler(assets *service.AssetService) *AssetHandler {
-	return &AssetHandler{assets: assets}
+func NewAssetHandler(assets *service.AssetService, bulk *service.BulkJobService) *AssetHandler {
+	return &AssetHandler{assets: assets, bulk: bulk}
 }
 
 func (h *AssetHandler) Create(c *fiber.Ctx) error {
@@ -263,19 +264,18 @@ func (h *AssetHandler) QR(c *fiber.Ctx) error {
 	return c.Send(png)
 }
 
-// QRBulk returns a multi-page PDF of QR labels for the requested assets.
+// QRBulk enqueues an async job that renders a combined PDF of QR labels and
+// returns 202 + the BulkJob. The PDF is fetched from the /result sub-resource.
 func (h *AssetHandler) QRBulk(c *fiber.Ctx) error {
 	var req models.BulkQrRequest
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	pdf, err := h.assets.QRBulkPDF(c.Context(), principal(c), req.AssetIDs)
+	job, err := h.bulk.EnqueueQR(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
-		return err
+		return handleActionError(c, err)
 	}
-	c.Set(fiber.HeaderContentType, "application/pdf")
-	c.Set(fiber.HeaderContentDisposition, `attachment; filename="asset-labels.pdf"`)
-	return c.Send(pdf)
+	return response.Accepted(c, job)
 }
 
 // canAccessAsset checks the requester is either admin or has the asset's home
@@ -351,11 +351,14 @@ func (h *AssetHandler) BulkTransfer(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	resp, err := h.assets.BulkTransfer(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, diag, err := h.bulk.EnqueueTransfer(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
 	}
-	return response.OK(c, resp)
+	if diag != nil {
+		return response.OK(c, diag) // strict per-row validation failure: today's shape, no job
+	}
+	return response.Accepted(c, job)
 }
 
 func (h *AssetHandler) BulkStatus(c *fiber.Ctx) error {
@@ -363,11 +366,14 @@ func (h *AssetHandler) BulkStatus(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	resp, err := h.assets.BulkChangeStatus(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, diag, err := h.bulk.EnqueueStatus(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
 	}
-	return response.OK(c, resp)
+	if diag != nil {
+		return response.OK(c, diag)
+	}
+	return response.Accepted(c, job)
 }
 
 func (h *AssetHandler) BulkAssign(c *fiber.Ctx) error {
@@ -375,11 +381,14 @@ func (h *AssetHandler) BulkAssign(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	resp, err := h.assets.BulkAssign(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, diag, err := h.bulk.EnqueueAssign(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
 	}
-	return response.OK(c, resp)
+	if diag != nil {
+		return response.OK(c, diag)
+	}
+	return response.Accepted(c, job)
 }
 
 func (h *AssetHandler) BulkCondition(c *fiber.Ctx) error {
@@ -387,11 +396,88 @@ func (h *AssetHandler) BulkCondition(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	resp, err := h.assets.BulkUpdateCondition(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, err := h.bulk.EnqueueCondition(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
 	}
-	return response.OK(c, resp)
+	return response.Accepted(c, job)
+}
+
+// --- Async bulk-job read endpoints -----------------------------------------
+
+// bulkJobReadable reports whether the caller may read the job: the requesting
+// principal or an admin.
+func bulkJobReadable(c *fiber.Ctx, requestedBy bson.ObjectID) bool {
+	return middleware.IsAdmin(c) || middleware.CurrentUserID(c) == requestedBy
+}
+
+// BulkJobGet returns a job's status. RBAC: requester or admin.
+func (h *AssetHandler) BulkJobGet(c *fiber.Ctx) error {
+	id, err := ParseObjectID(c, "jobId")
+	if err != nil {
+		return err
+	}
+	doc, err := h.bulk.Get(c.Context(), id)
+	if err != nil {
+		return err
+	}
+	if !bulkJobReadable(c, doc.RequestedBy) {
+		return apperror.Forbidden("not authorized for this job")
+	}
+	return response.OK(c, doc.BulkJob)
+}
+
+// BulkJobList lists jobs filtered by optional status/type. Admin only.
+func (h *AssetHandler) BulkJobList(c *fiber.Ctx) error {
+	if !middleware.IsAdmin(c) {
+		return apperror.Forbidden("admin only")
+	}
+	var status *models.BulkJobStatus
+	if v := c.Query("status"); v != "" {
+		s := models.BulkJobStatus(v)
+		status = &s
+	}
+	var typ *models.BulkJobType
+	if v := c.Query("type"); v != "" {
+		t := models.BulkJobType(v)
+		typ = &t
+	}
+	jobs, err := h.bulk.List(c.Context(), status, typ, 200)
+	if err != nil {
+		return err
+	}
+	return response.OK(c, models.BulkJobList{Jobs: jobs})
+}
+
+// BulkJobResult streams the rendered QR PDF for a completed qr job. RBAC:
+// requester or admin. 404 until ready or if not a qr job; 410 once the result
+// has been cleaned up after its retention window.
+func (h *AssetHandler) BulkJobResult(c *fiber.Ctx) error {
+	id, err := ParseObjectID(c, "jobId")
+	if err != nil {
+		return err
+	}
+	doc, err := h.bulk.Get(c.Context(), id)
+	if err != nil {
+		return err
+	}
+	if !bulkJobReadable(c, doc.RequestedBy) {
+		return apperror.Forbidden("not authorized for this job")
+	}
+	if doc.Type != models.BulkJobTypeQr || doc.Status != models.BulkJobStatusCompleted {
+		return apperror.NotFound("job result not available")
+	}
+	if doc.ResultStorageKey == "" {
+		return apperror.Gone("job result has expired")
+	}
+	rc, err := h.bulk.OpenResult(c.Context(), doc)
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	c.Set(fiber.HeaderContentType, "application/pdf")
+	c.Set(fiber.HeaderContentDisposition, `attachment; filename="asset-labels.pdf"`)
+	return c.SendStream(rc)
 }
 
 // principal flattens the authenticated request principal (identity, role,
