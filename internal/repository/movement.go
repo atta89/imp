@@ -68,6 +68,23 @@ func (r *MovementRepository) InsertMany(ctx context.Context, movements []*models
 	return nil
 }
 
+// ListByBulkJob returns every movement stamped with the given bulkJobId. The
+// async-job completion step reads these to aggregate the assets that actually
+// moved/were-assigned into a single digest — an append-only, crash-safe source
+// of truth (a reclaimed job re-derives the same set).
+func (r *MovementRepository) ListByBulkJob(ctx context.Context, bulkJobID bson.ObjectID) ([]models.Movement, error) {
+	cur, err := r.coll.Find(ctx, bson.M{"bulkJobId": bulkJobID})
+	if err != nil {
+		return nil, apperror.Internal("list movements by bulk job", err)
+	}
+	defer cur.Close(ctx)
+	var out []models.Movement
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, apperror.Internal("decode movements", err)
+	}
+	return out, nil
+}
+
 func (r *MovementRepository) ListByAsset(ctx context.Context, assetID bson.ObjectID) ([]models.Movement, error) {
 	cur, err := r.coll.Find(ctx,
 		bson.M{"assetId": assetID},

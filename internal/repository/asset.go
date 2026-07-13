@@ -128,6 +128,30 @@ func (r *AssetRepository) FindByID(ctx context.Context, id bson.ObjectID) (*mode
 	return &a, nil
 }
 
+// LoadByIDs bulk-loads assets into a map keyed by id. Unlike FindByIDs it
+// tolerates missing ids (they are simply absent from the map), so the async
+// bulk-job enqueue path can classify each missing row as not_found rather than
+// failing the whole load.
+func (r *AssetRepository) LoadByIDs(ctx context.Context, ids []bson.ObjectID) (map[bson.ObjectID]*models.Asset, error) {
+	out := make(map[bson.ObjectID]*models.Asset, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+	cur, err := r.coll.Find(ctx, bson.M{"_id": bson.M{"$in": ids}})
+	if err != nil {
+		return nil, apperror.Internal("load assets by ids", err)
+	}
+	defer cur.Close(ctx)
+	var rows []models.Asset
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, apperror.Internal("decode assets", err)
+	}
+	for i := range rows {
+		out[rows[i].ID] = &rows[i]
+	}
+	return out, nil
+}
+
 // FindByTag resolves an asset by its unique tag. Used by the bulk importer
 // when an admin supplies their own tags in the upload.
 func (r *AssetRepository) FindByTag(ctx context.Context, tag string) (*models.Asset, error) {

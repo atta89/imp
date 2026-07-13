@@ -264,6 +264,25 @@ func (s *AttachmentService) Link(ctx context.Context, ids []bson.ObjectID, asset
 	return s.repo.MarkLinked(ctx, ids, assetID, movementID)
 }
 
+// ReserveForJob marks attachments as held by an async bulk job so the orphan
+// sweep skips them until the job reaches a terminal state. Empty ids is a
+// no-op. Called at enqueue.
+func (s *AttachmentService) ReserveForJob(ctx context.Context, ids []bson.ObjectID, jobID bson.ObjectID) error {
+	if len(ids) == 0 || s.repo == nil {
+		return nil
+	}
+	return s.repo.Reserve(ctx, ids, jobID)
+}
+
+// ReleaseJobReservation clears a job's attachment reservation once it is
+// terminal. Linked attachments stay linked; unlinked ones become sweepable.
+func (s *AttachmentService) ReleaseJobReservation(ctx context.Context, jobID bson.ObjectID) error {
+	if s.repo == nil {
+		return nil
+	}
+	return s.repo.ReleaseReservation(ctx, jobID)
+}
+
 // OrphanSweep deletes attachments that are unlinked and older than
 // orphanSweepAge, along with their stored bytes. Per-item errors are
 // logged and skipped so one bad row never aborts the batch.
@@ -302,4 +321,3 @@ func (s *AttachmentService) OrphanSweep(ctx context.Context) error {
 	}
 	return nil
 }
-

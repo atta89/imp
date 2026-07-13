@@ -93,6 +93,39 @@ func (r *AttachmentRepository) MarkLinked(ctx context.Context, ids []bson.Object
 	return nil
 }
 
+// Reserve marks attachments as held by an async bulk job so the orphan sweep
+// will not delete them while the job is still queued/running and has not yet
+// had a chance to link them inside a batch txn. Fields are internal (bson-only,
+// not on the API model). Called at enqueue.
+func (r *AttachmentRepository) Reserve(ctx context.Context, ids []bson.ObjectID, jobID bson.ObjectID) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	_, err := r.coll.UpdateMany(ctx,
+		bson.M{"_id": bson.M{"$in": ids}},
+		bson.M{"$set": bson.M{"reservedByJobId": jobID, "reservedAt": time.Now().UTC()}},
+	)
+	if err != nil {
+		return apperror.Internal("reserve attachments", err)
+	}
+	return nil
+}
+
+// ReleaseReservation clears the reservation for a job once it reaches a terminal
+// state. Attachments linked to succeeded rows stay linked (and are exempt from
+// the sweep on that basis); the attachments of a fully-failed job become
+// sweepable again once released.
+func (r *AttachmentRepository) ReleaseReservation(ctx context.Context, jobID bson.ObjectID) error {
+	_, err := r.coll.UpdateMany(ctx,
+		bson.M{"reservedByJobId": jobID},
+		bson.M{"$unset": bson.M{"reservedByJobId": "", "reservedAt": ""}},
+	)
+	if err != nil {
+		return apperror.Internal("release attachment reservation", err)
+	}
+	return nil
+}
+
 func (r *AttachmentRepository) ListOrphans(ctx context.Context, olderThan time.Time, limit int64) ([]models.Attachment, error) {
 	opts := options.Find().SetSort(bson.D{{Key: "createdAt", Value: 1}})
 	if limit > 0 {
@@ -102,6 +135,8 @@ func (r *AttachmentRepository) ListOrphans(ctx context.Context, olderThan time.T
 		bson.M{
 			"linked":    false,
 			"createdAt": bson.M{"$lt": olderThan},
+			// Exempt attachments reserved by a not-yet-terminal bulk job.
+			"reservedByJobId": bson.M{"$exists": false},
 		},
 		opts,
 	)

@@ -405,6 +405,7 @@ func (s *AssetService) applyStatusChange(ctx context.Context, a *models.Asset, p
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
+	stampBulkJobID(ctx, m)
 	if err := s.movements.Create(ctx, m); err != nil {
 		return nil, err
 	}
@@ -511,6 +512,7 @@ func (s *AssetService) applyConditionUpdate(ctx context.Context, a *models.Asset
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
+	stampBulkJobID(ctx, m)
 	if err := s.movements.Create(ctx, m); err != nil {
 		return nil, err
 	}
@@ -592,6 +594,7 @@ func (s *AssetService) applyTransfer(ctx context.Context, a *models.Asset, perfo
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
+	stampBulkJobID(ctx, m)
 	if err := s.movements.Create(ctx, m); err != nil {
 		return nil, err
 	}
@@ -661,6 +664,7 @@ func (s *AssetService) applyAssignCustody(ctx context.Context, a *models.Asset, 
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
+	stampBulkJobID(ctx, m)
 	if err := s.movements.Create(ctx, m); err != nil {
 		return nil, err
 	}
@@ -719,6 +723,19 @@ func (s *AssetService) QRPNG(ctx context.Context, id bson.ObjectID) ([]byte, err
 // the printed sheet always matches the request). RBAC: caller must be admin
 // or have either home OR current venue in scope for every requested asset.
 func (s *AssetService) QRBulkPDF(ctx context.Context, p Principal, ids []bson.ObjectID) ([]byte, error) {
+	assets, err := s.QRBulkValidate(ctx, p, ids)
+	if err != nil {
+		return nil, err
+	}
+	return s.renderLabelsForAssets(ctx, assets)
+}
+
+// QRBulkValidate performs the synchronous validation for a QR bulk request:
+// count bounds, existence (unknown id → 400 with the offending id), and
+// per-asset RBAC (admin or home/current venue in scope). Returns the resolved
+// assets. Shared by the sync path and the async-job enqueue path so the two
+// cannot drift.
+func (s *AssetService) QRBulkValidate(ctx context.Context, p Principal, ids []bson.ObjectID) ([]models.Asset, error) {
 	if len(ids) == 0 {
 		return nil, apperror.BadRequest("at least one asset id is required")
 	}
@@ -729,7 +746,6 @@ func (s *AssetService) QRBulkPDF(ctx context.Context, p Principal, ids []bson.Ob
 	if err != nil {
 		return nil, err
 	}
-
 	// RBAC: every requested asset must be in the caller's scope.
 	for i := range assets {
 		a := &assets[i]
@@ -737,8 +753,29 @@ func (s *AssetService) QRBulkPDF(ctx context.Context, p Principal, ids []bson.Ob
 			return nil, apperror.Forbidden("not authorized for asset " + a.AssetTag)
 		}
 	}
+	return assets, nil
+}
 
-	// Bulk-load venue + category names so we don't N+1 the database.
+// RenderQRForIDs renders the combined label PDF for the given asset ids without
+// RBAC — used by the async QR job after authorization was evaluated at enqueue.
+// Missing ids are simply omitted from the sheet.
+func (s *AssetService) RenderQRForIDs(ctx context.Context, ids []bson.ObjectID) ([]byte, error) {
+	m, err := s.assets.LoadByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	assets := make([]models.Asset, 0, len(ids))
+	for _, id := range ids {
+		if a, ok := m[id]; ok {
+			assets = append(assets, *a)
+		}
+	}
+	return s.renderLabelsForAssets(ctx, assets)
+}
+
+// renderLabelsForAssets builds the label list (bulk-loading venue + category
+// names to avoid N+1) and renders the combined PDF.
+func (s *AssetService) renderLabelsForAssets(ctx context.Context, assets []models.Asset) ([]byte, error) {
 	venueNames := map[bson.ObjectID]string{}
 	categoryNames := map[bson.ObjectID]string{}
 	for i := range assets {

@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // LocalDisk stores files under a root directory, sharded by the first four
@@ -39,11 +40,46 @@ func NewKey() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-func (l *LocalDisk) pathFor(key string) (string, error) {
-	if len(key) != 32 {
-		return "", fmt.Errorf("storage key must be 32 hex chars: %q", key)
+// NewKeyWithPrefix returns a fresh key namespaced under a slash-delimited
+// prefix, e.g. "bulk-jobs/<32hex>". The prefix organizes stored files by
+// producer; the leaf remains a sharded 32-hex key.
+func NewKeyWithPrefix(prefix string) (string, error) {
+	k, err := NewKey()
+	if err != nil {
+		return "", err
 	}
-	return filepath.Join(l.root, key[0:2], key[2:4], key), nil
+	return strings.TrimRight(prefix, "/") + "/" + k, nil
+}
+
+// pathFor maps a storage key to an on-disk path. A key is either a bare
+// 32-hex-char leaf, or "<prefix>/<32hex>" where prefix is one or more safe
+// path segments (no "..", not absolute). The leaf is always sharded into
+// <root>/<prefix?>/<leaf[0:2]>/<leaf[2:4]>/<leaf>.
+func (l *LocalDisk) pathFor(key string) (string, error) {
+	prefix, leaf := "", key
+	if i := strings.LastIndex(key, "/"); i >= 0 {
+		prefix, leaf = key[:i], key[i+1:]
+		if prefix == "" || filepath.IsAbs(prefix) || strings.Contains(prefix, "..") {
+			return "", fmt.Errorf("invalid storage key prefix: %q", key)
+		}
+	}
+	if len(leaf) != 32 || !isHex32(leaf) {
+		return "", fmt.Errorf("storage key must be 32 hex chars (with optional prefix): %q", key)
+	}
+	return filepath.Join(l.root, filepath.FromSlash(prefix), leaf[0:2], leaf[2:4], leaf), nil
+}
+
+func isHex32(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 // Put streams r to <path>.tmp then atomically renames to <path>. If the
