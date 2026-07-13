@@ -3,8 +3,8 @@ package notification
 import (
 	"testing"
 
-	"go.mongodb.org/mongo-driver/v2/bson"
 	openapi_types "github.com/oapi-codegen/runtime/types"
+	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"imp/internal/models"
 )
@@ -29,7 +29,7 @@ func TestBuildBulkCustodyAssignedNotification_HappyPath(t *testing.T) {
 	if n == nil {
 		t.Fatal("expected a notification; got nil")
 	}
-	if n.Type != models.NotificationTypeCustodyChange {
+	if n.Type != models.CustodyChange {
 		t.Errorf("Type: want custody_change; got %s", n.Type)
 	}
 	if n.RecipientUserID != u.ID {

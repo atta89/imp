@@ -55,7 +55,7 @@ func (t *Triggers) CustodyAssigned(ctx context.Context, asset *models.Asset, new
 		u.Name, asset.AssetTag, asset.Name, t.scanURL(asset.QrToken),
 	)
 	t.enqueue(ctx, &models.Notification{
-		Type:            models.NotificationTypeCustodyChange,
+		Type:            models.CustodyChange,
 		RecipientUserID: u.ID,
 		RecipientEmail:  u.Email,
 		AssetID:         &asset.ID,
@@ -91,7 +91,7 @@ func (t *Triggers) AssetTransferred(ctx context.Context, asset *models.Asset, fr
 			m.Name, asset.AssetTag, asset.Name, fromName, toName, link,
 		)
 		t.enqueue(ctx, &models.Notification{
-			Type:            models.NotificationTypeTransfer,
+			Type:            models.Transfer,
 			RecipientUserID: m.ID,
 			RecipientEmail:  m.Email,
 			AssetID:         &asset.ID,
@@ -136,7 +136,7 @@ func (t *Triggers) RepairClosed(ctx context.Context, asset *models.Asset, repair
 			u.Name, asset.AssetTag, asset.Name, verdict, resolution, link,
 		)
 		t.enqueue(ctx, &models.Notification{
-			Type:            models.NotificationTypeRepairUpdate,
+			Type:            models.RepairUpdate,
 			RecipientUserID: u.ID,
 			RecipientEmail:  u.Email,
 			AssetID:         &asset.ID,
@@ -229,7 +229,7 @@ func buildBulkCustodyAssignedNotification(u *models.User, refs []BulkCustodyAssi
 		u.Name, listing.String(),
 	)
 	return &models.Notification{
-		Type:            models.NotificationTypeCustodyChange,
+		Type:            models.CustodyChange,
 		RecipientUserID: u.ID,
 		RecipientEmail:  u.Email,
 		Subject:         subject,
@@ -267,7 +267,7 @@ func (t *Triggers) BulkTransferDigest(ctx context.Context, groups []BulkTransfer
 				m.Name, toName, listing.String(),
 			)
 			t.enqueue(ctx, &models.Notification{
-				Type:            models.NotificationTypeTransfer,
+				Type:            models.Transfer,
 				RecipientUserID: m.ID,
 				RecipientEmail:  m.Email,
 				Subject:         subject,

@@ -38,6 +38,24 @@ const (
 	AttachmentValidationErrorErrorNotOwner      AttachmentValidationErrorError = "not_owner"
 )
 
+// Defines values for BulkJobStatus.
+const (
+	BulkJobStatusCompleted           BulkJobStatus = "completed"
+	BulkJobStatusCompletedWithErrors BulkJobStatus = "completed_with_errors"
+	BulkJobStatusFailed              BulkJobStatus = "failed"
+	BulkJobStatusQueued              BulkJobStatus = "queued"
+	BulkJobStatusRunning             BulkJobStatus = "running"
+)
+
+// Defines values for BulkJobType.
+const (
+	BulkJobTypeAssign    BulkJobType = "assign"
+	BulkJobTypeCondition BulkJobType = "condition"
+	BulkJobTypeQr        BulkJobType = "qr"
+	BulkJobTypeStatus    BulkJobType = "status"
+	BulkJobTypeTransfer  BulkJobType = "transfer"
+)
+
 // Defines values for CustomFieldType.
 const (
 	Boolean CustomFieldType = "boolean"
@@ -91,17 +109,17 @@ const (
 
 // Defines values for NotificationStatus.
 const (
-	NotificationStatusFailed NotificationStatus = "failed"
-	NotificationStatusQueued NotificationStatus = "queued"
-	NotificationStatusSent   NotificationStatus = "sent"
+	Failed NotificationStatus = "failed"
+	Queued NotificationStatus = "queued"
+	Sent   NotificationStatus = "sent"
 )
 
 // Defines values for NotificationType.
 const (
-	NotificationTypeCustodyChange NotificationType = "custody_change"
-	NotificationTypeOverdue       NotificationType = "overdue"
-	NotificationTypeRepairUpdate  NotificationType = "repair_update"
-	NotificationTypeTransfer      NotificationType = "transfer"
+	CustodyChange NotificationType = "custody_change"
+	Overdue       NotificationType = "overdue"
+	RepairUpdate  NotificationType = "repair_update"
+	Transfer      NotificationType = "transfer"
 )
 
 // Defines values for PurchaseOrderStatus.
@@ -268,6 +286,9 @@ type BulkAssignRequest struct {
 	AttachmentIDs     *[]ObjectId `json:"attachmentIds,omitempty"`
 	Notes             *string     `json:"notes,omitempty"`
 	ResponsibleUserID ObjectId    `json:"responsibleUserId"`
+
+	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued). Note: an unknown/inactive responsibleUserId is always a whole-request 400 regardless of this flag.
+	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // BulkAssignResponse defines model for BulkAssignResponse.
@@ -302,7 +323,70 @@ type BulkConditionUpdate struct {
 	AttachmentIDs *[]ObjectId    `json:"attachmentIds,omitempty"`
 	Condition     AssetCondition `json:"condition"`
 	Notes         *string        `json:"notes,omitempty"`
+
+	// ValidOnly Accepted for symmetry with the other bulk actions. The condition job is best-effort by design: no-op/not-found/forbidden rows are counted as skips, not errors, so this flag has no effect on enqueue outcome.
+	ValidOnly *bool `json:"validOnly,omitempty"`
 }
+
+// BulkJob defines model for BulkJob.
+type BulkJob struct {
+	CompletedAt *time.Time    `bson:"completedAt,omitempty" json:"completedAt,omitempty"`
+	Counts      BulkJobCounts `bson:"counts" json:"counts"`
+	CreatedAt   time.Time     `bson:"createdAt" json:"createdAt"`
+
+	// Errors Row-level errors, capped (see errorsTruncated).
+	Errors []BulkJobRowError `bson:"errors" json:"errors"`
+
+	// ErrorsTruncated True when more row errors occurred than are retained in errors[].
+	ErrorsTruncated bool            `bson:"errorsTruncated" json:"errorsTruncated"`
+	ID              ObjectId        `bson:"_id,omitempty" json:"id"`
+	Progress        BulkJobProgress `bson:"progress" json:"progress"`
+
+	// RequestedBy The enqueuing principal. Authorization is evaluated once, at enqueue; every Movement is stamped performedBy = this principal.
+	RequestedBy ObjectId      `bson:"requestedBy" json:"requestedBy"`
+	StartedAt   *time.Time    `bson:"startedAt,omitempty" json:"startedAt,omitempty"`
+	Status      BulkJobStatus `bson:"status" json:"status"`
+	Type        BulkJobType   `bson:"type" json:"type"`
+}
+
+// BulkJobCounts defines model for BulkJobCounts.
+type BulkJobCounts struct {
+	Failed int `bson:"failed" json:"failed"`
+
+	// Skipped No-op rows (e.g. already-assigned custody, unchanged condition).
+	Skipped   int `bson:"skipped" json:"skipped"`
+	Succeeded int `bson:"succeeded" json:"succeeded"`
+
+	// Total Deduped assetIds enqueued.
+	Total int `bson:"total" json:"total"`
+}
+
+// BulkJobList defines model for BulkJobList.
+type BulkJobList struct {
+	Jobs []BulkJob `json:"jobs"`
+}
+
+// BulkJobProgress defines model for BulkJobProgress.
+type BulkJobProgress struct {
+	// BatchesDone Batches whose transaction has committed. Advances only inside committed batch txns, so it is crash-safe.
+	BatchesDone  int `bson:"batchesDone" json:"batchesDone"`
+	BatchesTotal int `bson:"batchesTotal" json:"batchesTotal"`
+}
+
+// BulkJobRowError defines model for BulkJobRowError.
+type BulkJobRowError struct {
+	AssetID ObjectId `bson:"assetId" json:"assetId"`
+
+	// Code Per-row reason, e.g. not_found, forbidden, invalid_transition, dest_venue_forbidden.
+	Code    string `bson:"code" json:"code"`
+	Message string `bson:"message" json:"message"`
+}
+
+// BulkJobStatus queued (awaiting a worker), running (claimed, batches executing), completed (all batches done, zero row errors), completed_with_errors (done, some rows failed/skipped-as-error), failed (zero successes or a fatal infrastructure error).
+type BulkJobStatus string
+
+// BulkJobType defines model for BulkJobType.
+type BulkJobType string
 
 // BulkQrRequest defines model for BulkQrRequest.
 type BulkQrRequest struct {
@@ -315,6 +399,9 @@ type BulkStatusRequest struct {
 	AttachmentIDs *[]ObjectId `json:"attachmentIds,omitempty"`
 	Reason        *string     `json:"reason,omitempty"`
 	Status        AssetStatus `json:"status"`
+
+	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued).
+	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // BulkTransferRequest defines model for BulkTransferRequest.
@@ -326,6 +413,9 @@ type BulkTransferRequest struct {
 	ExpectedReturnDate *time.Time `json:"expectedReturnDate,omitempty"`
 	Notes              *string    `json:"notes,omitempty"`
 	ToVenueID          ObjectId   `json:"toVenueId"`
+
+	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued).
+	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // Category defines model for Category.
@@ -587,22 +677,25 @@ type Movement struct {
 	AttachmentIDs *[]ObjectId `bson:"attachmentIds,omitempty" json:"attachmentIds,omitempty"`
 
 	// Attachments Populated only in history responses via server-side enrichment; never persisted.
-	Attachments        *[]AttachmentMeta `bson:"-" json:"attachments,omitempty"`
-	ExpectedReturnDate *time.Time        `bson:"expectedReturnDate,omitempty" json:"expectedReturnDate,omitempty"`
-	FromCondition      *AssetCondition   `bson:"fromCondition,omitempty" json:"fromCondition,omitempty"`
-	FromStatus         *AssetStatus      `bson:"fromStatus,omitempty" json:"fromStatus,omitempty"`
-	FromUserID         *ObjectId         `bson:"fromUserId,omitempty" json:"fromUserId,omitempty"`
-	FromVenueID        *ObjectId         `bson:"fromVenueId,omitempty" json:"fromVenueId,omitempty"`
-	ID                 ObjectId          `bson:"_id,omitempty" json:"id"`
-	Notes              *string           `bson:"notes,omitempty" json:"notes,omitempty"`
-	PerformedAt        time.Time         `bson:"performedAt" json:"performedAt"`
-	PerformedBy        ObjectId          `bson:"performedBy" json:"performedBy"`
-	Reason             *string           `bson:"reason,omitempty" json:"reason,omitempty"`
-	ToCondition        *AssetCondition   `bson:"toCondition,omitempty" json:"toCondition,omitempty"`
-	ToStatus           *AssetStatus      `bson:"toStatus,omitempty" json:"toStatus,omitempty"`
-	ToUserID           *ObjectId         `bson:"toUserId,omitempty" json:"toUserId,omitempty"`
-	ToVenueID          *ObjectId         `bson:"toVenueId,omitempty" json:"toVenueId,omitempty"`
-	Type               MovementType      `bson:"type" json:"type"`
+	Attachments *[]AttachmentMeta `bson:"-" json:"attachments,omitempty"`
+
+	// BulkJobID Provenance stamp for movements written by an async bulk-asset job (mirrors importJobId on assets/POs). Absent for single-asset actions.
+	BulkJobID          *ObjectId       `bson:"bulkJobId,omitempty" json:"bulkJobId,omitempty"`
+	ExpectedReturnDate *time.Time      `bson:"expectedReturnDate,omitempty" json:"expectedReturnDate,omitempty"`
+	FromCondition      *AssetCondition `bson:"fromCondition,omitempty" json:"fromCondition,omitempty"`
+	FromStatus         *AssetStatus    `bson:"fromStatus,omitempty" json:"fromStatus,omitempty"`
+	FromUserID         *ObjectId       `bson:"fromUserId,omitempty" json:"fromUserId,omitempty"`
+	FromVenueID        *ObjectId       `bson:"fromVenueId,omitempty" json:"fromVenueId,omitempty"`
+	ID                 ObjectId        `bson:"_id,omitempty" json:"id"`
+	Notes              *string         `bson:"notes,omitempty" json:"notes,omitempty"`
+	PerformedAt        time.Time       `bson:"performedAt" json:"performedAt"`
+	PerformedBy        ObjectId        `bson:"performedBy" json:"performedBy"`
+	Reason             *string         `bson:"reason,omitempty" json:"reason,omitempty"`
+	ToCondition        *AssetCondition `bson:"toCondition,omitempty" json:"toCondition,omitempty"`
+	ToStatus           *AssetStatus    `bson:"toStatus,omitempty" json:"toStatus,omitempty"`
+	ToUserID           *ObjectId       `bson:"toUserId,omitempty" json:"toUserId,omitempty"`
+	ToVenueID          *ObjectId       `bson:"toVenueId,omitempty" json:"toVenueId,omitempty"`
+	Type               MovementType    `bson:"type" json:"type"`
 }
 
 // MovementType defines model for MovementType.
@@ -916,6 +1009,12 @@ type GetAssetsParams struct {
 
 	// Q free-text on name/serialNumber/assetTag
 	Q *string `form:"q,omitempty" json:"q,omitempty"`
+}
+
+// GetAssetsBulkJobsParams defines parameters for GetAssetsBulkJobs.
+type GetAssetsBulkJobsParams struct {
+	Status *BulkJobStatus `form:"status,omitempty" json:"status,omitempty"`
+	Type   *BulkJobType   `form:"type,omitempty" json:"type,omitempty"`
 }
 
 // PostAttachmentsMultipartBody defines parameters for PostAttachments.

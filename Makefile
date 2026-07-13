@@ -1,9 +1,13 @@
 .PHONY: run build test lint tidy fmt vet generate
 
-# Regenerate Go model structs from openapi.yaml. Requires:
-#   go install github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@latest
+# Regenerate Go model structs from openapi.yaml.
+# Pinned to a fixed oapi-codegen version so regeneration is reproducible: the
+# tool's enum-constant naming (collision prefixing) drifts across versions, so
+# @latest would silently reshuffle generated constant names. Run via `go run`
+# so no separate `go install` is needed.
+OAPI_CODEGEN_VERSION := v2.5.1
 generate:
-	oapi-codegen -config oapi-codegen.yaml openapi.yaml
+	go run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -config oapi-codegen.yaml openapi.yaml
 
 run:
 	go run ./cmd/api

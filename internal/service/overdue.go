@@ -46,10 +46,10 @@ func NewOverdueService(
 
 // ScanResult is what the cron job logs after a daily scan.
 type ScanResult struct {
-	NewlyFlagged   int64
-	Recipients     int
-	DigestsQueued  int
-	AssetsCovered  int
+	NewlyFlagged  int64
+	Recipients    int
+	DigestsQueued int
+	AssetsCovered int
 }
 
 // RunDailyScan flags newly-overdue assets and enqueues one digest email per
@@ -92,7 +92,7 @@ func (s *OverdueService) RunDailyScan(ctx context.Context) (ScanResult, error) {
 		}
 		subject, body := composeOverdueDigest(u, items, venueNames, s.baseURL, now)
 		n := &models.Notification{
-			Type:            models.NotificationTypeOverdue,
+			Type:            models.Overdue,
 			RecipientUserID: u.ID,
 			RecipientEmail:  u.Email,
 			Subject:         subject,

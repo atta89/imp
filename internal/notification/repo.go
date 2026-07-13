@@ -28,7 +28,7 @@ func (r *Repository) Create(ctx context.Context, n *models.Notification) error {
 		n.CreatedAt = time.Now().UTC()
 	}
 	if n.Status == "" {
-		n.Status = models.NotificationStatusQueued
+		n.Status = models.Queued
 	}
 	if n.Channel == "" {
 		n.Channel = models.Email
@@ -42,7 +42,7 @@ func (r *Repository) Create(ctx context.Context, n *models.Notification) error {
 // FindQueued returns up to `limit` queued notifications, oldest first.
 func (r *Repository) FindQueued(ctx context.Context, limit int) ([]models.Notification, error) {
 	cur, err := r.coll.Find(ctx,
-		bson.M{"status": models.NotificationStatusQueued},
+		bson.M{"status": models.Queued},
 		options.Find().
 			SetSort(bson.D{{Key: "createdAt", Value: 1}}).
 			SetLimit(int64(limit)),
@@ -60,7 +60,7 @@ func (r *Repository) FindQueued(ctx context.Context, limit int) ([]models.Notifi
 
 func (r *Repository) MarkSent(ctx context.Context, id bson.ObjectID, sentAt time.Time) error {
 	_, err := r.coll.UpdateByID(ctx, id, bson.M{
-		"$set":   bson.M{"status": models.NotificationStatusSent, "sentAt": sentAt, "error": nil},
+		"$set":   bson.M{"status": models.Sent, "sentAt": sentAt, "error": nil},
 		"$unset": bson.M{}, // placeholder; bson.M needs at least one op
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func (r *Repository) RecordFailure(ctx context.Context, id bson.ObjectID, attemp
 		"error":    errMsg,
 	}
 	if terminal {
-		set["status"] = models.NotificationStatusFailed
+		set["status"] = models.Failed
 	}
 	_, err := r.coll.UpdateByID(ctx, id, bson.M{"$set": set})
 	if err != nil {
