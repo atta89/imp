@@ -65,9 +65,19 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "uploadedBy", Value: 1}, {Key: "createdAt", Value: -1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
 		}},
+		{"bulk_jobs", []mongo.IndexModel{
+			// Claim/list scans by status, oldest first.
+			{Keys: bson.D{{Key: "status", Value: 1}, {Key: "createdAt", Value: 1}}},
+			// Requester's job history + RBAC ownership lookups.
+			{Keys: bson.D{{Key: "requestedBy", Value: 1}, {Key: "createdAt", Value: -1}}},
+			// Expired-lease reclaim scan.
+			{Keys: bson.D{{Key: "leaseExpiresAt", Value: 1}}},
+		}},
 		{"movements", []mongo.IndexModel{
 			{Keys: bson.D{{Key: "assetId", Value: 1}, {Key: "performedAt", Value: -1}}},
 			{Keys: bson.D{{Key: "type", Value: 1}}},
+			// Completion-step aggregation of a job's successful movements.
+			{Keys: bson.D{{Key: "bulkJobId", Value: 1}}},
 		}},
 		{"repairs", []mongo.IndexModel{
 			{Keys: bson.D{{Key: "assetId", Value: 1}}},

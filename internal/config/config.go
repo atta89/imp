@@ -12,28 +12,39 @@ import (
 )
 
 type Config struct {
-	Port               string
-	AppBaseURL         string
-	MongoURI           string
-	MongoDB            string
-	JWTSecret          string
-	JWTAccess          time.Duration
-	JWTRefresh         time.Duration
-	GmailUser          string
-	GmailPass          string
-	SMTPHost           string
-	SMTPPort           string
-	LogLevel           slog.Level
-	SeedAdminEmail     string
-	SeedAdminPassword  string
-	SeedAdminName      string
-	OverdueCron        string
-	QRLogoPath         string
-	FrontendBaseURL    string
-	StorageBaseDir     string
-	AttachmentSweepCron string
-	AttachmentMaxBytes int64
+	Port                    string
+	AppBaseURL              string
+	MongoURI                string
+	MongoDB                 string
+	JWTSecret               string
+	JWTAccess               time.Duration
+	JWTRefresh              time.Duration
+	GmailUser               string
+	GmailPass               string
+	SMTPHost                string
+	SMTPPort                string
+	LogLevel                slog.Level
+	SeedAdminEmail          string
+	SeedAdminPassword       string
+	SeedAdminName           string
+	OverdueCron             string
+	QRLogoPath              string
+	FrontendBaseURL         string
+	StorageBaseDir          string
+	AttachmentSweepCron     string
+	AttachmentMaxBytes      int64
 	AttachmentMaxPerRequest int
+
+	// Async bulk-asset jobs.
+	BulkMaxAssets          int           // max assetIds accepted per bulk request (deduped)
+	BulkBatchSize          int           // assets processed per Mongo transaction
+	BulkWorkerConcurrency  int           // number of in-process claim/run goroutines
+	BulkWorkerPollInterval time.Duration // idle poll cadence when no job is claimable
+	BulkJobLease           time.Duration // worker lease duration; reclaimed if it expires
+	BulkJobMaxAttempts     int           // per-batch retry cap before rows are errored out
+	BulkJobErrorCap        int           // max row errors retained on a job doc
+	BulkResultTTL          time.Duration // retention for rendered qr PDFs
+	BulkResultCleanupCron  string        // cron for deleting expired job results
 }
 
 func Load() (*Config, error) {
@@ -72,6 +83,36 @@ func Load() (*Config, error) {
 	if cfg.AttachmentMaxPerRequest, err = parseInt("ATTACHMENT_MAX_PER_REQ", "5"); err != nil {
 		return nil, err
 	}
+
+	if cfg.BulkMaxAssets, err = parseInt("BULK_MAX_ASSETS", "5000"); err != nil {
+		return nil, err
+	}
+	if cfg.BulkBatchSize, err = parseInt("BULK_BATCH_SIZE", "100"); err != nil {
+		return nil, err
+	}
+	if cfg.BulkWorkerConcurrency, err = parseInt("BULK_WORKER_CONCURRENCY", "1"); err != nil {
+		return nil, err
+	}
+	if cfg.BulkWorkerPollInterval, err = parseDuration("BULK_WORKER_POLL_INTERVAL", "5s"); err != nil {
+		return nil, err
+	}
+	var leaseSecs int
+	if leaseSecs, err = parseInt("BULK_JOB_LEASE_SECONDS", "120"); err != nil {
+		return nil, err
+	}
+	cfg.BulkJobLease = time.Duration(leaseSecs) * time.Second
+	if cfg.BulkJobMaxAttempts, err = parseInt("BULK_JOB_MAX_ATTEMPTS", "5"); err != nil {
+		return nil, err
+	}
+	if cfg.BulkJobErrorCap, err = parseInt("BULK_JOB_ERROR_CAP", "1000"); err != nil {
+		return nil, err
+	}
+	var resultTTLDays int
+	if resultTTLDays, err = parseInt("BULK_RESULT_TTL_DAYS", "7"); err != nil {
+		return nil, err
+	}
+	cfg.BulkResultTTL = time.Duration(resultTTLDays) * 24 * time.Hour
+	cfg.BulkResultCleanupCron = getEnv("BULK_RESULT_CLEANUP_CRON", "0 4 * * *")
 
 	// FrontendBaseURL is the host scanned QR codes and email links resolve
 	// to — the public web app, NOT the API. Falls back to APP_BASE_URL so
