@@ -1063,10 +1063,7 @@ func (s *BulkJobService) runIDsJob(ctx context.Context, job *repository.BulkJobD
 		return s.failIDsJob(ctx, job, workerID, err)
 	}
 	truncated := cnt > int64(limit)
-	total := int(cnt)
-	if total > limit {
-		total = limit
-	}
+	total := min(int(cnt), limit)
 	batchesTotal := 0
 	if batchSize > 0 {
 		batchesTotal = (total + batchSize - 1) / batchSize

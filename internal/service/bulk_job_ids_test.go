@@ -44,3 +44,19 @@ func TestEnqueueIDs_MalformedFilter(t *testing.T) {
 		t.Fatalf("err = %v, want BadRequest 'invalid venue id'", err)
 	}
 }
+
+func TestEnqueueIDs_InvalidVenueScope(t *testing.T) {
+	s := idsSvc()
+	ctx := context.Background()
+	p := Principal{
+		IsAdmin:  false,
+		UserID:   bson.NewObjectID(),
+		VenueIDs: map[string]struct{}{"nothex": {}},
+	}
+
+	_, err := s.EnqueueIDs(ctx, p.UserID, p, models.BulkIdsRequest{})
+	appErr, ok := apperror.As(err)
+	if !ok || appErr.Kind != apperror.KindBadRequest || appErr.Message != "invalid venue scope" {
+		t.Fatalf("err = %v, want BadRequest 'invalid venue scope'", err)
+	}
+}

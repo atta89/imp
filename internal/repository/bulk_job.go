@@ -13,10 +13,11 @@ import (
 	"imp/internal/models"
 )
 
-// ErrLeaseLost is returned by ApplyBatchResult when the conditional job-doc
-// update matches nothing — i.e. another worker reclaimed an expired lease and
-// advanced the cursor. The caller MUST abort the surrounding transaction so no
-// asset/movement writes commit; the reclaiming worker owns the batch.
+// ErrLeaseLost is returned by ApplyBatchResult, InitIDsScan, and
+// AdvanceIDsScan when the conditional job-doc update matches nothing — i.e.
+// another worker reclaimed an expired lease and advanced the cursor. The
+// caller MUST abort the surrounding transaction so no asset/movement writes
+// commit; the reclaiming worker owns the batch.
 var ErrLeaseLost = errors.New("bulk job lease lost or cursor advanced by another worker")
 
 // BulkJobRepository persists async bulk-asset job state. The collection is the
