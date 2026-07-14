@@ -26,6 +26,9 @@ type BulkJobConfig struct {
 	ErrorCap    int           // max row errors retained on a job doc
 	Lease       time.Duration // worker lease duration
 	ResultTTL   time.Duration // qr result retention
+
+	IDsMaxLimit  int // ids export: request cap and default limit
+	IDsBatchSize int // ids export: keyset batch size
 }
 
 // BulkJobService owns the async bulk-asset pipeline: synchronous enqueue-time
@@ -57,6 +60,12 @@ func NewBulkJobService(asset *AssetService, bulk *repository.BulkJobRepository, 
 	}
 	if cfg.Lease == 0 {
 		cfg.Lease = 120 * time.Second
+	}
+	if cfg.IDsMaxLimit == 0 {
+		cfg.IDsMaxLimit = 100000
+	}
+	if cfg.IDsBatchSize == 0 {
+		cfg.IDsBatchSize = 1000
 	}
 	return &BulkJobService{asset: asset, bulk: bulk, storage: fs, cfg: cfg, logger: logger}
 }

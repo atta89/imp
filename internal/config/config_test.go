@@ -49,6 +49,39 @@ func TestLoad_AttachmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_AssetIDsDefaultsAndOverrides(t *testing.T) {
+	// Required env for Load() to succeed.
+	t.Setenv("MONGO_URI", "mongodb://localhost:27017")
+	t.Setenv("MONGO_DB", "imp_test")
+	t.Setenv("JWT_SECRET", "x")
+
+	// Defaults when unset.
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AssetIDsMaxLimit != 100000 {
+		t.Fatalf("AssetIDsMaxLimit default = %d, want 100000", cfg.AssetIDsMaxLimit)
+	}
+	if cfg.AssetIDsBatchSize != 1000 {
+		t.Fatalf("AssetIDsBatchSize default = %d, want 1000", cfg.AssetIDsBatchSize)
+	}
+
+	// Overrides.
+	t.Setenv("ASSET_IDS_MAX_LIMIT", "250")
+	t.Setenv("ASSET_IDS_BATCH_SIZE", "50")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.AssetIDsMaxLimit != 250 {
+		t.Fatalf("AssetIDsMaxLimit = %d, want 250", cfg.AssetIDsMaxLimit)
+	}
+	if cfg.AssetIDsBatchSize != 50 {
+		t.Fatalf("AssetIDsBatchSize = %d, want 50", cfg.AssetIDsBatchSize)
+	}
+}
+
 func setRequiredEnv(t *testing.T) {
 	t.Helper()
 	// Load() rejects a config missing these — set stubs so we can exercise

@@ -45,6 +45,10 @@ type Config struct {
 	BulkJobErrorCap        int           // max row errors retained on a job doc
 	BulkResultTTL          time.Duration // retention for rendered qr PDFs
 	BulkResultCleanupCron  string        // cron for deleting expired job results
+
+	// Async asset-ids export job.
+	AssetIDsMaxLimit  int // request cap AND default for POST /assets/bulk/ids limit
+	AssetIDsBatchSize int // keyset batch size for the ids scan
 }
 
 func Load() (*Config, error) {
@@ -113,6 +117,13 @@ func Load() (*Config, error) {
 	}
 	cfg.BulkResultTTL = time.Duration(resultTTLDays) * 24 * time.Hour
 	cfg.BulkResultCleanupCron = getEnv("BULK_RESULT_CLEANUP_CRON", "0 4 * * *")
+
+	if cfg.AssetIDsMaxLimit, err = parseInt("ASSET_IDS_MAX_LIMIT", "100000"); err != nil {
+		return nil, err
+	}
+	if cfg.AssetIDsBatchSize, err = parseInt("ASSET_IDS_BATCH_SIZE", "1000"); err != nil {
+		return nil, err
+	}
 
 	// FrontendBaseURL is the host scanned QR codes and email links resolve
 	// to — the public web app, NOT the API. Falls back to APP_BASE_URL so

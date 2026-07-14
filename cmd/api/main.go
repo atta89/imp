@@ -109,6 +109,9 @@ func run() error {
 		ErrorCap:    cfg.BulkJobErrorCap,
 		Lease:       cfg.BulkJobLease,
 		ResultTTL:   cfg.BulkResultTTL,
+
+		IDsMaxLimit:  cfg.AssetIDsMaxLimit,
+		IDsBatchSize: cfg.AssetIDsBatchSize,
 	}, logger)
 	poSvc := service.NewPurchaseOrderService(poRepo, assetRepo, movementRepo, counterRepo, venueRepo, categoryRepo, userRepo, departmentRepo, mongoConn.Client)
 	repairSvc := service.NewRepairService(repairRepo, assetRepo, movementRepo, triggers)
