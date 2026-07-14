@@ -178,7 +178,7 @@ type Asset struct {
 // AssetCondition defines model for AssetCondition.
 type AssetCondition string
 
-// AssetIdsResult The JSON artifact served by GET /assets/bulk/jobs/{jobId}/result for an ids job. assetIds are ascending by _id (insertion order, NOT name or relevance), as observed during the scan (not a point-in-time snapshot).
+// AssetIdsResult The JSON artifact served by GET /assets/bulk/jobs/{jobId}/result for an ids job. assetIds are descending by _id (newest first — the most recently created matching assets, NOT name or relevance); when more assets match than limit, the newest `limit` are kept. Ids are as observed during the scan (not a point-in-time snapshot).
 type AssetIdsResult struct {
 	AssetIDs []ObjectId `json:"assetIds"`
 

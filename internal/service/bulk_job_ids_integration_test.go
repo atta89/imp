@@ -320,8 +320,8 @@ func TestBulkJobIT_IDs_KeysetBatching(t *testing.T) {
 			t.Fatalf("duplicate id %s", id.Hex())
 		}
 		seen[id] = struct{}{}
-		if i > 0 && !(res.AssetIDs[i-1].Hex() < id.Hex()) {
-			t.Fatalf("not ascending at %d: %s then %s", i, res.AssetIDs[i-1].Hex(), id.Hex())
+		if i > 0 && !(res.AssetIDs[i-1].Hex() > id.Hex()) {
+			t.Fatalf("not descending at %d: %s then %s", i, res.AssetIDs[i-1].Hex(), id.Hex())
 		}
 	}
 }
@@ -333,12 +333,27 @@ func TestBulkJobIT_IDs_KeysetBatching(t *testing.T) {
 func TestBulkJobIT_IDs_LimitTruncation(t *testing.T) {
 	env := setupIT(t, BulkJobConfig{IDsMaxLimit: 100000, IDsBatchSize: 100, Lease: 60 * time.Second})
 	admin := seedN(t, env, 250)
+
+	// Full export (no limit): all 250, newest _id first.
+	full := runIDsToCompletion(t, env, admin, &models.AssetListFilters{}, nil)
+	if len(full.AssetIDs) != 250 {
+		t.Fatalf("full export got %d ids, want 250", len(full.AssetIDs))
+	}
+
 	res := runIDsToCompletion(t, env, admin, &models.AssetListFilters{}, intp(100))
 	if len(res.AssetIDs) != 100 || res.Count != 100 {
 		t.Fatalf("got count=%d len=%d, want 100", res.Count, len(res.AssetIDs))
 	}
 	if !res.Truncated {
 		t.Fatal("truncated should be true when matched > limit")
+	}
+	// Truncation keeps the NEWEST 100 (highest _id), in the same descending
+	// order — i.e. exactly the first 100 of the full newest-first export.
+	for i := 0; i < 100; i++ {
+		if res.AssetIDs[i] != full.AssetIDs[i] {
+			t.Fatalf("truncated result must be the newest 100 (full[:100]); mismatch at %d: %s vs %s",
+				i, res.AssetIDs[i].Hex(), full.AssetIDs[i].Hex())
+		}
 	}
 }
 

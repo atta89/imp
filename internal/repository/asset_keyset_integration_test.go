@@ -1,7 +1,7 @@
 //go:build integration
 
 // Integration test for the asset keyset-pagination primitives (CountUpTo,
-// FindIDsAfter) that back the async ids-export bulk job. Requires MongoDB
+// FindIDsBefore) that back the async ids-export bulk job. Requires MongoDB
 // reachable via MONGO_URI, e.g.:
 //
 //	MONGO_URI='mongodb://localhost:27077/?replicaSet=rs0test' \
@@ -61,22 +61,22 @@ func TestAssetKeysetIT_ScanOrderAndCount(t *testing.T) {
 		want[a.ID] = struct{}{}
 	}
 
-	// Keyset scan in batches of 1000.
+	// Keyset scan in batches of 1000, descending by _id (newest first).
 	got := make(map[bson.ObjectID]struct{}, n)
-	var last *bson.ObjectID
+	var before *bson.ObjectID
 	var prev bson.ObjectID
 	first := true
 	for {
-		batch, err := repo.FindIDsAfter(ctx, bson.M{}, last, 1000)
+		batch, err := repo.FindIDsBefore(ctx, bson.M{}, before, 1000)
 		if err != nil {
-			t.Fatalf("FindIDsAfter: %v", err)
+			t.Fatalf("FindIDsBefore: %v", err)
 		}
 		if len(batch) == 0 {
 			break
 		}
 		for _, id := range batch {
-			if !first && !(prev.Hex() < id.Hex()) {
-				t.Fatalf("not strictly ascending: %s then %s", prev.Hex(), id.Hex())
+			if !first && !(prev.Hex() > id.Hex()) {
+				t.Fatalf("not strictly descending: %s then %s", prev.Hex(), id.Hex())
 			}
 			if _, dup := got[id]; dup {
 				t.Fatalf("duplicate id %s", id.Hex())
@@ -86,7 +86,7 @@ func TestAssetKeysetIT_ScanOrderAndCount(t *testing.T) {
 			first = false
 		}
 		lc := batch[len(batch)-1]
-		last = &lc
+		before = &lc
 		if len(batch) < 1000 {
 			break
 		}

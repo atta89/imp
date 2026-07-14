@@ -1037,8 +1037,10 @@ func (s *BulkJobService) runQRJob(ctx context.Context, job *repository.BulkJobDo
 // ---------------------------------------------------------------------------
 
 // runIDsJob collects asset ids matching the persisted GET /assets filter set
-// (including venue scope) via keyset-paginated batches, up to the job's limit,
-// and writes a JSON artifact via FileStorage. Read-only: no transactions, no
+// (including venue scope) via keyset-paginated batches, DESCENDING by _id
+// (newest first — "from the last"), up to the job's limit; when more match than
+// limit, the newest `limit` are kept and the oldest are dropped. It writes a
+// JSON artifact via FileStorage. Read-only: no transactions, no
 // notifications, no per-row errors. On lease-expiry reclaim the scan restarts
 // from zero (InitIDsScan resets counters) — cheap because it is read-only. Like
 // runQRJob it fails fast on an infrastructure error (no whole-job retry).
@@ -1078,9 +1080,9 @@ func (s *BulkJobService) runIDsJob(ctx context.Context, job *repository.BulkJobD
 	}
 
 	ids := make([]bson.ObjectID, 0, total)
-	var last *bson.ObjectID
+	var before *bson.ObjectID
 	for len(ids) < limit {
-		batch, err := s.asset.assets.FindIDsAfter(ctx, filter, last, batchSize)
+		batch, err := s.asset.assets.FindIDsBefore(ctx, filter, before, batchSize)
 		if err != nil {
 			return s.failIDsJob(ctx, job, workerID, err)
 		}
@@ -1093,7 +1095,7 @@ func (s *BulkJobService) runIDsJob(ctx context.Context, job *repository.BulkJobD
 			}
 			ids = append(ids, id)
 			lc := id
-			last = &lc
+			before = &lc
 		}
 		// Heartbeat + progress; also the ownership gate before the next batch and
 		// before the artifact write. If the lease was lost, yield without writing.

@@ -227,22 +227,23 @@ func (r *AssetRepository) CountUpTo(ctx context.Context, filter bson.M, limit in
 	return n, nil
 }
 
-// FindIDsAfter returns up to batchSize asset ids matching filter with _id > after
-// (or from the start when after is nil), ascending by _id, projecting _id only.
-// This is the keyset-pagination primitive for the ids-export scan: never skip,
-// never an unbounded Find().All(). The caller-supplied filter is never mutated —
-// the keyset bound is combined via a fresh $and wrapper.
-func (r *AssetRepository) FindIDsAfter(ctx context.Context, filter bson.M, after *bson.ObjectID, batchSize int) ([]bson.ObjectID, error) {
+// FindIDsBefore returns up to batchSize asset ids matching filter with _id <
+// before (or from the highest _id when before is nil), DESCENDING by _id,
+// projecting _id only. This is the keyset-pagination primitive for the
+// ids-export scan, which returns the newest assets first ("from the last"):
+// never skip, never an unbounded Find().All(). The caller-supplied filter is
+// never mutated — the keyset bound is combined via a fresh $and wrapper.
+func (r *AssetRepository) FindIDsBefore(ctx context.Context, filter bson.M, before *bson.ObjectID, batchSize int) ([]bson.ObjectID, error) {
 	if filter == nil {
 		filter = bson.M{}
 	}
 	q := filter
-	if after != nil {
-		q = bson.M{"$and": bson.A{filter, bson.M{"_id": bson.M{"$gt": *after}}}}
+	if before != nil {
+		q = bson.M{"$and": bson.A{filter, bson.M{"_id": bson.M{"$lt": *before}}}}
 	}
 	cur, err := r.coll.Find(ctx, q,
 		options.Find().
-			SetSort(bson.D{{Key: "_id", Value: 1}}).
+			SetSort(bson.D{{Key: "_id", Value: -1}}).
 			SetLimit(int64(batchSize)).
 			SetProjection(bson.M{"_id": 1}),
 	)
