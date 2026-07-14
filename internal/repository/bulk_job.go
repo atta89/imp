@@ -41,6 +41,30 @@ type BulkJobParams struct {
 	ResponsibleUserID  *bson.ObjectID         `bson:"responsibleUserId,omitempty"`
 	Condition          *models.AssetCondition `bson:"condition,omitempty"`
 	Notes              *string                `bson:"notes,omitempty"`
+
+	// IDs holds the persisted filter + venue scope + cap for an ids-export job,
+	// so the worker can rebuild the exact GET /assets query (Fiber-free) off the
+	// job doc after a crash/reclaim.
+	IDs *IDsParams `bson:"ids,omitempty"`
+}
+
+// IDsParams is the durable form of an AssetListQuery for an ids-export job.
+// Scoped/ScopeVenueIDs preserve the list endpoint's nil-vs-empty scope semantics:
+// Scoped=false ⇒ admin/unrestricted; Scoped=true ⇒ restrict to ScopeVenueIDs
+// (an empty slice legitimately matches nothing).
+type IDsParams struct {
+	Venue         *bson.ObjectID      `bson:"venue,omitempty"`
+	CurrentVenue  *bson.ObjectID      `bson:"currentVenue,omitempty"`
+	Category      *bson.ObjectID      `bson:"category,omitempty"`
+	Department    *bson.ObjectID      `bson:"department,omitempty"`
+	Responsible   *bson.ObjectID      `bson:"responsible,omitempty"`
+	Status        *models.AssetStatus `bson:"status,omitempty"`
+	Away          bool                `bson:"away,omitempty"`
+	Overdue       bool                `bson:"overdue,omitempty"`
+	Q             string              `bson:"q,omitempty"`
+	Limit         int                 `bson:"limit"`
+	Scoped        bool                `bson:"scoped"`
+	ScopeVenueIDs []bson.ObjectID     `bson:"scopeVenueIds,omitempty"`
 }
 
 // BulkJobDoc is the on-disk shape: the API-visible BulkJob plus the internal
@@ -237,6 +261,55 @@ func (r *BulkJobRepository) ApplyBatchResult(ctx context.Context, id bson.Object
 	return nil
 }
 
+// InitIDsScan (re)initializes an ids-export job's counters at the start of a
+// run: it sets the now-known matched total and batchesTotal, resets the running
+// counters to zero (so a crash + reclaim restarts cleanly from zero — the scan
+// is read-only and cheap), and extends the lease. Guarded on claimedBy;
+// ErrLeaseLost if the worker no longer owns the job.
+func (r *BulkJobRepository) InitIDsScan(ctx context.Context, id bson.ObjectID, workerID string, total, batchesTotal int, now time.Time, lease time.Duration) error {
+	res, err := r.coll.UpdateOne(ctx,
+		bson.M{"_id": id, "claimedBy": workerID},
+		bson.M{"$set": bson.M{
+			"counts.total":          total,
+			"counts.succeeded":      0,
+			"counts.failed":         0,
+			"counts.skipped":        0,
+			"progress.batchesTotal": batchesTotal,
+			"progress.batchesDone":  0,
+			"cursor":                0,
+			"leaseExpiresAt":        now.Add(lease),
+		}},
+	)
+	if err != nil {
+		return apperror.Internal("init ids scan", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
+// AdvanceIDsScan records progress after a keyset batch: sets the collected count
+// as succeeded, bumps batchesDone, and heartbeats the lease — in one guarded
+// update. Guarded on claimedBy so a worker that lost its lease cannot overwrite
+// the reclaiming worker's progress; ErrLeaseLost when unmatched.
+func (r *BulkJobRepository) AdvanceIDsScan(ctx context.Context, id bson.ObjectID, workerID string, collected int, now time.Time, lease time.Duration) error {
+	res, err := r.coll.UpdateOne(ctx,
+		bson.M{"_id": id, "claimedBy": workerID},
+		bson.M{
+			"$set": bson.M{"counts.succeeded": collected, "leaseExpiresAt": now.Add(lease)},
+			"$inc": bson.M{"progress.batchesDone": 1},
+		},
+	)
+	if err != nil {
+		return apperror.Internal("advance ids scan", err)
+	}
+	if res.MatchedCount == 0 {
+		return ErrLeaseLost
+	}
+	return nil
+}
+
 // SetResultKey records the rendered-PDF storage key for a qr job.
 func (r *BulkJobRepository) SetResultKey(ctx context.Context, id bson.ObjectID, key string) error {
 	_, err := r.coll.UpdateByID(ctx, id, bson.M{"$set": bson.M{"resultStorageKey": key}})
@@ -277,11 +350,11 @@ func (r *BulkJobRepository) MarkNotified(ctx context.Context, id bson.ObjectID, 
 	return res.ModifiedCount > 0, nil
 }
 
-// FindExpiredResults returns completed qr jobs whose rendered PDF is older than
+// FindExpiredResults returns completed qr/ids jobs whose artifact is older than
 // `before` and still present, for the retention-cleanup cron.
 func (r *BulkJobRepository) FindExpiredResults(ctx context.Context, before time.Time, limit int64) ([]BulkJobDoc, error) {
 	filter := bson.M{
-		"type":             models.BulkJobTypeQr,
+		"type":             bson.M{"$in": bson.A{models.BulkJobTypeQr, models.BulkJobTypeIds}},
 		"resultStorageKey": bson.M{"$exists": true, "$ne": ""},
 		"completedAt":      bson.M{"$lt": before},
 	}
