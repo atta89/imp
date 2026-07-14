@@ -1048,8 +1048,9 @@ components:
       type: object
       description: >-
         The JSON artifact served by GET /assets/bulk/jobs/{jobId}/result for an
-        ids job. assetIds are descending by _id (newest first — the most
-        recently created matching assets, NOT name or relevance); when more
+        ids job. assetIds are descending by createdAt (newest first — the most
+        recently created matching assets, with _id as a stable tiebreak, NOT
+        name or relevance), following the GET /assets list sort; when more
         assets match than limit, the newest `limit` are kept. Ids are as
         observed during the scan (not a point-in-time snapshot).
       required: [jobId, generatedAt, count, truncated, assetIds]
@@ -2167,8 +2168,8 @@ paths:
         Returns 202 + a BulkJob; poll GET /assets/bulk/jobs/{jobId} and download
         the JSON artifact from GET /assets/bulk/jobs/{jobId}/result once
         completed. The scan is keyset-paginated and read-only; ids are
-        descending by _id (newest first) as observed during the scan (not a
-        point-in-time snapshot).
+        descending by createdAt (newest first, following the GET /assets list
+        sort) as observed during the scan (not a point-in-time snapshot).
       security:
         - bearerAuth: []
       requestBody:

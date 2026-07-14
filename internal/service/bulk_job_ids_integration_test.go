@@ -334,7 +334,7 @@ func TestBulkJobIT_IDs_LimitTruncation(t *testing.T) {
 	env := setupIT(t, BulkJobConfig{IDsMaxLimit: 100000, IDsBatchSize: 100, Lease: 60 * time.Second})
 	admin := seedN(t, env, 250)
 
-	// Full export (no limit): all 250, newest _id first.
+	// Full export (no limit): all 250, newest first (createdAt desc).
 	full := runIDsToCompletion(t, env, admin, &models.AssetListFilters{}, nil)
 	if len(full.AssetIDs) != 250 {
 		t.Fatalf("full export got %d ids, want 250", len(full.AssetIDs))
@@ -347,7 +347,7 @@ func TestBulkJobIT_IDs_LimitTruncation(t *testing.T) {
 	if !res.Truncated {
 		t.Fatal("truncated should be true when matched > limit")
 	}
-	// Truncation keeps the NEWEST 100 (highest _id), in the same descending
+	// Truncation keeps the NEWEST 100, in the same descending (createdAt, _id)
 	// order — i.e. exactly the first 100 of the full newest-first export.
 	for i := 0; i < 100; i++ {
 		if res.AssetIDs[i] != full.AssetIDs[i] {

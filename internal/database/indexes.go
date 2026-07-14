@@ -46,6 +46,9 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "departmentId", Value: 1}}},
 			{Keys: bson.D{{Key: "importJobId", Value: 1}}},
 			{Keys: bson.D{{Key: "isOverdue", Value: 1}}},
+			// Backs the GET /assets list sort (createdAt desc) and the ids-export
+			// (createdAt desc, _id desc) keyset scan.
+			{Keys: bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}},
 			{
 				Keys: bson.D{
 					{Key: "name", Value: "text"},

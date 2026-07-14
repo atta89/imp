@@ -227,41 +227,51 @@ func (r *AssetRepository) CountUpTo(ctx context.Context, filter bson.M, limit in
 	return n, nil
 }
 
-// FindIDsBefore returns up to batchSize asset ids matching filter with _id <
-// before (or from the highest _id when before is nil), DESCENDING by _id,
-// projecting _id only. This is the keyset-pagination primitive for the
-// ids-export scan, which returns the newest assets first ("from the last"):
-// never skip, never an unbounded Find().All(). The caller-supplied filter is
-// never mutated — the keyset bound is combined via a fresh $and wrapper.
-func (r *AssetRepository) FindIDsBefore(ctx context.Context, filter bson.M, before *bson.ObjectID, batchSize int) ([]bson.ObjectID, error) {
+// AssetKeysetCursor is a position in the (createdAt desc, _id desc) keyset scan:
+// the createdAt and _id of the last asset returned. A nil cursor starts the scan
+// from the newest asset. _id breaks createdAt ties — createdAt is NOT unique
+// (InsertMany stamps a single timestamp across a whole batch of assets), so a
+// createdAt-only keyset would skip or duplicate rows at a tie that straddles a
+// batch boundary. The _id tiebreak keeps the scan gap-free and duplicate-free.
+type AssetKeysetCursor struct {
+	CreatedAt time.Time     `bson:"createdAt"`
+	ID        bson.ObjectID `bson:"_id"`
+}
+
+// FindIDsBefore returns up to batchSize assets matching filter positioned strictly
+// before `cursor` in DESCENDING (createdAt, _id) order — the newest matching
+// assets first, following the GET /assets list sort (createdAt desc) with _id as
+// a stable tiebreak. A nil cursor starts from the newest asset. This is the
+// keyset-pagination primitive for the ids-export scan: never skip, never an
+// unbounded Find().All(). The caller-supplied filter is never mutated — the
+// keyset bound is combined via a fresh $and wrapper. Backed by the
+// {createdAt:-1,_id:-1} asset index.
+func (r *AssetRepository) FindIDsBefore(ctx context.Context, filter bson.M, cursor *AssetKeysetCursor, batchSize int) ([]AssetKeysetCursor, error) {
 	if filter == nil {
 		filter = bson.M{}
 	}
 	q := filter
-	if before != nil {
-		q = bson.M{"$and": bson.A{filter, bson.M{"_id": bson.M{"$lt": *before}}}}
+	if cursor != nil {
+		q = bson.M{"$and": bson.A{filter, bson.M{"$or": bson.A{
+			bson.M{"createdAt": bson.M{"$lt": cursor.CreatedAt}},
+			bson.M{"createdAt": cursor.CreatedAt, "_id": bson.M{"$lt": cursor.ID}},
+		}}}}
 	}
 	cur, err := r.coll.Find(ctx, q,
 		options.Find().
-			SetSort(bson.D{{Key: "_id", Value: -1}}).
+			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
 			SetLimit(int64(batchSize)).
-			SetProjection(bson.M{"_id": 1}),
+			SetProjection(bson.M{"_id": 1, "createdAt": 1}),
 	)
 	if err != nil {
 		return nil, apperror.Internal("find asset ids", err)
 	}
 	defer cur.Close(ctx)
-	var rows []struct {
-		ID bson.ObjectID `bson:"_id"`
-	}
+	var rows []AssetKeysetCursor
 	if err := cur.All(ctx, &rows); err != nil {
 		return nil, apperror.Internal("decode asset ids", err)
 	}
-	out := make([]bson.ObjectID, len(rows))
-	for i := range rows {
-		out[i] = rows[i].ID
-	}
-	return out, nil
+	return rows, nil
 }
 
 func (r *AssetRepository) Update(ctx context.Context, id bson.ObjectID, set bson.M) (*models.Asset, error) {

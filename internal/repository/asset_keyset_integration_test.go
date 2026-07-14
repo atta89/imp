@@ -25,6 +25,18 @@ import (
 	"imp/internal/models"
 )
 
+// keysetDescends reports whether b comes strictly after a in the scan's
+// (createdAt desc, _id desc) order.
+func keysetDescends(a, b AssetKeysetCursor) bool {
+	if a.CreatedAt.After(b.CreatedAt) {
+		return true
+	}
+	if a.CreatedAt.Equal(b.CreatedAt) {
+		return a.ID.Hex() > b.ID.Hex()
+	}
+	return false
+}
+
 func TestAssetKeysetIT_ScanOrderAndCount(t *testing.T) {
 	uri := os.Getenv("MONGO_URI")
 	if uri == "" {
@@ -61,32 +73,33 @@ func TestAssetKeysetIT_ScanOrderAndCount(t *testing.T) {
 		want[a.ID] = struct{}{}
 	}
 
-	// Keyset scan in batches of 1000, descending by _id (newest first).
+	// Keyset scan in batches of 1000, descending (createdAt, _id) — newest first.
 	got := make(map[bson.ObjectID]struct{}, n)
-	var before *bson.ObjectID
-	var prev bson.ObjectID
+	var cursor *AssetKeysetCursor
+	var prev AssetKeysetCursor
 	first := true
 	for {
-		batch, err := repo.FindIDsBefore(ctx, bson.M{}, before, 1000)
+		batch, err := repo.FindIDsBefore(ctx, bson.M{}, cursor, 1000)
 		if err != nil {
 			t.Fatalf("FindIDsBefore: %v", err)
 		}
 		if len(batch) == 0 {
 			break
 		}
-		for _, id := range batch {
-			if !first && !(prev.Hex() > id.Hex()) {
-				t.Fatalf("not strictly descending: %s then %s", prev.Hex(), id.Hex())
+		for _, row := range batch {
+			if !first && !keysetDescends(prev, row) {
+				t.Fatalf("not strictly descending: (%s,%s) then (%s,%s)",
+					prev.CreatedAt, prev.ID.Hex(), row.CreatedAt, row.ID.Hex())
 			}
-			if _, dup := got[id]; dup {
-				t.Fatalf("duplicate id %s", id.Hex())
+			if _, dup := got[row.ID]; dup {
+				t.Fatalf("duplicate id %s", row.ID.Hex())
 			}
-			got[id] = struct{}{}
-			prev = id
+			got[row.ID] = struct{}{}
+			prev = row
 			first = false
 		}
 		lc := batch[len(batch)-1]
-		before = &lc
+		cursor = &lc
 		if len(batch) < 1000 {
 			break
 		}
