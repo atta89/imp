@@ -2,6 +2,7 @@ package handler
 
 import (
 	"errors"
+	"io"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -484,10 +485,25 @@ func (h *AssetHandler) BulkJobResult(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	return sendArtifact(c, rc, contentType, filename)
+}
+
+// sendArtifact writes a completed job's stored artifact as the response body.
+// It buffers the reader fully before returning because Fiber's c.SendStream
+// reads the body AFTER the handler returns: a reader closed on return (as the
+// *os.File from FileStorage.Get requires) would then be read after close and
+// the response would fail with a 500. This is the same Fiber pitfall handled in
+// the attachment Download handler; buffering keeps both the qr PDF and the ids
+// JSON downloads correct.
+func sendArtifact(c *fiber.Ctx, rc io.ReadCloser, contentType, filename string) error {
 	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return apperror.Internal("read job result", err)
+	}
 	c.Set(fiber.HeaderContentType, contentType)
 	c.Set(fiber.HeaderContentDisposition, `attachment; filename="`+filename+`"`)
-	return c.SendStream(rc)
+	return c.Send(body)
 }
 
 // principal flattens the authenticated request principal (identity, role,
