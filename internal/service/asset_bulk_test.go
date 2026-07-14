@@ -36,7 +36,7 @@ func TestValidateBulkTransfer_HappyPath(t *testing.T) {
 	}
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a, b}, ToVenueID: dest}
 	oks, res, allOK := validateBulkTransferRequest(in, okPrincipal(home, dest),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true, MaxBulkAssets)
 	if !allOK {
 		t.Fatalf("expected allOK; results=%+v", res)
 	}
@@ -58,7 +58,7 @@ func TestValidateBulkTransfer_CapsAtMaxBulkAssets(t *testing.T) {
 	}
 	in := models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest}
 	_, _, allOK := validateBulkTransferRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("x") }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("x") }, true, MaxBulkAssets)
 	if allOK {
 		t.Error("expected allOK=false when over cap")
 	}
@@ -71,7 +71,7 @@ func TestValidateBulkTransfer_RbacRejectsOutOfScopeAsset(t *testing.T) {
 	// principal has access to dest but not to home — should be rejected.
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a}, ToVenueID: dest}
 	_, res, allOK := validateBulkTransferRequest(in, okPrincipal(dest),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true, MaxBulkAssets)
 	if allOK {
 		t.Error("expected failure")
 	}
@@ -86,7 +86,7 @@ func TestValidateBulkTransfer_RejectsDestVenueOutOfScope(t *testing.T) {
 	store := map[bson.ObjectID]*models.Asset{a: mkAsset(a, home, home, models.Available)}
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a}, ToVenueID: dest}
 	_, res, allOK := validateBulkTransferRequest(in, okPrincipal(home),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true, MaxBulkAssets)
 	if allOK || res[0].Ok || res[0].Error == nil || *res[0].Error != "dest_venue_forbidden" {
 		t.Errorf("expected dest_venue_forbidden; got %+v", res[0])
 	}
@@ -98,7 +98,7 @@ func TestValidateBulkTransfer_RejectsSameVenueMove(t *testing.T) {
 	store := map[bson.ObjectID]*models.Asset{a: mkAsset(a, home, home, models.Available)}
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a}, ToVenueID: home}
 	_, res, allOK := validateBulkTransferRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true, MaxBulkAssets)
 	if allOK || res[0].Ok {
 		t.Errorf("expected rejection; got %+v", res[0])
 	}
@@ -109,7 +109,7 @@ func TestValidateBulkTransfer_NotFoundIsPerRow(t *testing.T) {
 	dest := bson.NewObjectID()
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a}, ToVenueID: dest}
 	_, res, allOK := validateBulkTransferRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("missing") }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("missing") }, true, MaxBulkAssets)
 	if allOK || res[0].Ok || res[0].Error == nil || *res[0].Error != "not_found" {
 		t.Errorf("expected not_found; got %+v", res[0])
 	}
@@ -121,7 +121,7 @@ func TestValidateBulkTransfer_RejectsDuplicateAssetIDs(t *testing.T) {
 	store := map[bson.ObjectID]*models.Asset{a: mkAsset(a, home, home, models.Available)}
 	in := models.BulkTransferRequest{AssetIDs: []bson.ObjectID{a, a}, ToVenueID: dest}
 	_, _, allOK := validateBulkTransferRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true)
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, true, MaxBulkAssets)
 	if allOK {
 		t.Error("expected duplicate-ID rejection")
 	}
@@ -136,7 +136,7 @@ func TestValidateBulkStatus_RejectsIllegalTransitions(t *testing.T) {
 	}
 	in := models.BulkStatusRequest{AssetIDs: []bson.ObjectID{a, b}, Status: models.InUse}
 	_, res, allOK := validateBulkStatusRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if allOK {
 		t.Error("expected allOK=false because of illegal transition on a")
 	}
@@ -200,7 +200,7 @@ func TestClassifyBulkCondition_MixedBatch(t *testing.T) {
 		Condition: models.Fair,
 	}
 
-	toUpdate, skipped, err := classifyBulkCondition(in, okPrincipal(inScope), storeLookup(store))
+	toUpdate, skipped, err := classifyBulkCondition(in, okPrincipal(inScope), storeLookup(store), MaxBulkAssets)
 	if err != nil {
 		t.Fatalf("planner errored: %v", err)
 	}
@@ -233,7 +233,7 @@ func TestClassifyBulkCondition_DedupSilent(t *testing.T) {
 		AssetIDs:  []bson.ObjectID{a, a, a},
 		Condition: models.Fair,
 	}
-	toUpdate, skipped, err := classifyBulkCondition(in, okPrincipal(home), storeLookup(store))
+	toUpdate, skipped, err := classifyBulkCondition(in, okPrincipal(home), storeLookup(store), MaxBulkAssets)
 	if err != nil {
 		t.Fatalf("planner errored: %v", err)
 	}
@@ -265,7 +265,7 @@ func TestClassifyBulkCondition_GlobalErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, _, err := classifyBulkCondition(tc.in, okPrincipal(home), storeLookup(nil))
+			_, _, err := classifyBulkCondition(tc.in, okPrincipal(home), storeLookup(nil), MaxBulkAssets)
 			var ae *apperror.Error
 			if !errors.As(err, &ae) {
 				t.Fatalf("want *apperror.Error, got %T: %v", err, err)
@@ -291,7 +291,7 @@ func TestClassifyBulkCondition_AdminBypassesVenueScope(t *testing.T) {
 		AssetIDs:  []bson.ObjectID{a, b},
 		Condition: models.Fair,
 	}
-	toUpdate, skipped, err := classifyBulkCondition(in, Principal{IsAdmin: true}, storeLookup(store))
+	toUpdate, skipped, err := classifyBulkCondition(in, Principal{IsAdmin: true}, storeLookup(store), MaxBulkAssets)
 	if err != nil {
 		t.Fatalf("planner errored: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestValidateBulkAssign_HappyPath(t *testing.T) {
 	}
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a, b}, ResponsibleUserID: newU}
 	oks, res, allOK := validateBulkAssignRequest(in, okPrincipal(home),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if !allOK {
 		t.Fatalf("expected allOK; results=%+v", res)
 	}
@@ -366,7 +366,7 @@ func TestValidateBulkAssign_ClassifiesNoOps(t *testing.T) {
 	}
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a, b}, ResponsibleUserID: newU}
 	oks, res, allOK := validateBulkAssignRequest(in, okPrincipal(home),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if !allOK {
 		t.Fatalf("expected allOK; results=%+v", res)
 	}
@@ -393,7 +393,7 @@ func TestValidateBulkAssign_ClassifiesNoOps(t *testing.T) {
 func TestValidateBulkAssign_EmptyBatch(t *testing.T) {
 	in := models.BulkAssignRequest{AssetIDs: nil, ResponsibleUserID: bson.NewObjectID()}
 	_, _, allOK := validateBulkAssignRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return nil, nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return nil, nil }, MaxBulkAssets)
 	if allOK {
 		t.Error("expected empty batch to fail")
 	}
@@ -406,7 +406,7 @@ func TestValidateBulkAssign_CapsAtMaxBulkAssets(t *testing.T) {
 	}
 	in := models.BulkAssignRequest{AssetIDs: ids, ResponsibleUserID: bson.NewObjectID()}
 	_, _, allOK := validateBulkAssignRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("x") })
+		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("x") }, MaxBulkAssets)
 	if allOK {
 		t.Error("expected over-cap batch to fail")
 	}
@@ -420,7 +420,7 @@ func TestValidateBulkAssign_RbacRejectsOutOfScopeAsset(t *testing.T) {
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a}, ResponsibleUserID: bson.NewObjectID()}
 	// principal only has access to a venue the asset is not tied to.
 	_, res, allOK := validateBulkAssignRequest(in, okPrincipal(otherVenue),
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if allOK {
 		t.Error("expected forbidden failure")
 	}
@@ -433,7 +433,7 @@ func TestValidateBulkAssign_NotFoundIsPerRow(t *testing.T) {
 	a := bson.NewObjectID()
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a}, ResponsibleUserID: bson.NewObjectID()}
 	_, res, allOK := validateBulkAssignRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("missing") })
+		func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("missing") }, MaxBulkAssets)
 	if allOK || res[0].Ok || res[0].Error == nil || *res[0].Error != "not_found" {
 		t.Errorf("expected not_found; got %+v", res[0])
 	}
@@ -445,7 +445,7 @@ func TestValidateBulkAssign_RejectsDuplicateAssetIDs(t *testing.T) {
 	store := map[bson.ObjectID]*models.Asset{a: mkAssetU(a, home, nil)}
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a, a}, ResponsibleUserID: bson.NewObjectID()}
 	_, res, allOK := validateBulkAssignRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if allOK {
 		t.Error("expected duplicate-id rejection")
 	}
@@ -464,7 +464,7 @@ func TestValidateBulkAssign_AdminBypassesVenueScope(t *testing.T) {
 	}
 	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{a, b}, ResponsibleUserID: bson.NewObjectID()}
 	oks, res, allOK := validateBulkAssignRequest(in, Principal{IsAdmin: true},
-		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil })
+		func(id bson.ObjectID) (*models.Asset, error) { return store[id], nil }, MaxBulkAssets)
 	if !allOK {
 		t.Fatalf("admin should reach both assets; results=%+v", res)
 	}

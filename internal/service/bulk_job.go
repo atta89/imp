@@ -253,7 +253,7 @@ func (s *BulkJobService) EnqueueTransfer(ctx context.Context, performedBy bson.O
 	if err != nil {
 		return nil, nil, err
 	}
-	oks, results, allOK := validateBulkTransferRequest(in, p, lookup, destExists)
+	oks, results, allOK := validateBulkTransferRequest(in, p, lookup, destExists, s.cfg.MaxAssets)
 
 	validOnly := in.ValidOnly != nil && *in.ValidOnly
 	if !allOK && (!validOnly || hasGlobalFailure(results)) {
@@ -290,7 +290,7 @@ func (s *BulkJobService) EnqueueStatus(ctx context.Context, performedBy bson.Obj
 	if err != nil {
 		return nil, nil, err
 	}
-	oks, results, allOK := validateBulkStatusRequest(in, p, lookup)
+	oks, results, allOK := validateBulkStatusRequest(in, p, lookup, s.cfg.MaxAssets)
 
 	validOnly := in.ValidOnly != nil && *in.ValidOnly
 	if !allOK && (!validOnly || hasGlobalFailure(results)) {
@@ -330,7 +330,7 @@ func (s *BulkJobService) EnqueueAssign(ctx context.Context, performedBy bson.Obj
 	if err != nil {
 		return nil, nil, err
 	}
-	oks, results, allOK := validateBulkAssignRequest(in, p, lookup)
+	oks, results, allOK := validateBulkAssignRequest(in, p, lookup, s.cfg.MaxAssets)
 
 	validOnly := in.ValidOnly != nil && *in.ValidOnly
 	if !allOK && (!validOnly || hasGlobalFailure(results)) {
@@ -389,7 +389,7 @@ func (s *BulkJobService) EnqueueCondition(ctx context.Context, performedBy bson.
 	// Best-effort: per-asset RBAC + not_found + unchanged become pre-counted
 	// skips (never a 400). Only a malformed request (bad enum/empty/over-cap)
 	// is a global 400.
-	toUpdate, skipped, err := classifyBulkCondition(in, p, lookup)
+	toUpdate, skipped, err := classifyBulkCondition(in, p, lookup, s.cfg.MaxAssets)
 	if err != nil {
 		return nil, err
 	}

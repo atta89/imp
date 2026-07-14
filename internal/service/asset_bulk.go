@@ -13,7 +13,11 @@ import (
 	"imp/internal/repository"
 )
 
-const MaxBulkAssets = 500
+// MaxBulkAssets is the DEFAULT per-request asset cap for the synchronous bulk
+// endpoints. The effective cap is AssetService.maxBulkAssets, wired from
+// BULK_MAX_ASSETS at construction; this const is the fallback used when config
+// is zero and the value the pure validation helpers are exercised with in tests.
+const MaxBulkAssets = 5000
 
 // Principal is the request principal flattened into plain data so the pure
 // authorization/validation helpers stay testable without Fiber.
@@ -75,15 +79,16 @@ func validateBulkTransferRequest(
 	p Principal,
 	lookup func(bson.ObjectID) (*models.Asset, error),
 	destVenueExists bool,
+	maxBulk int,
 ) ([]validatedTransfer, []models.BulkActionResult, bool) {
 	n := len(in.AssetIDs)
 	results := make([]models.BulkActionResult, 0, n)
-	if n == 0 || n > MaxBulkAssets {
+	if n == 0 || n > maxBulk {
 		// One synthetic failure row to signal the global problem; allOK=false.
 		return nil, []models.BulkActionResult{{
 			AssetID: bson.NilObjectID,
 			Ok:      false,
-			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, MaxBulkAssets)),
+			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, maxBulk)),
 		}}, false
 	}
 	if !p.canAccessVenue(in.ToVenueID) {
@@ -139,13 +144,14 @@ func validateBulkStatusRequest(
 	in models.BulkStatusRequest,
 	p Principal,
 	lookup func(bson.ObjectID) (*models.Asset, error),
+	maxBulk int,
 ) ([]validatedStatus, []models.BulkActionResult, bool) {
 	n := len(in.AssetIDs)
-	if n == 0 || n > MaxBulkAssets {
+	if n == 0 || n > maxBulk {
 		return nil, []models.BulkActionResult{{
 			AssetID: bson.NilObjectID,
 			Ok:      false,
-			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, MaxBulkAssets)),
+			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, maxBulk)),
 		}}, false
 	}
 
@@ -206,8 +212,8 @@ func dedupeTransferNotifyTargets(oks []validatedTransfer, _ bson.ObjectID) []not
 func (s *AssetService) BulkTransfer(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkTransferRequest) (*models.BulkActionResponse, error) {
 	if n := len(in.AssetIDs); n == 0 {
 		return nil, apperror.BadRequest("assetIds is required")
-	} else if n > MaxBulkAssets {
-		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", MaxBulkAssets))
+	} else if n > s.maxBulkAssets {
+		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", s.maxBulkAssets))
 	}
 
 	attachmentIDs := derefAttachmentIDs(in.AttachmentIDs)
@@ -229,7 +235,7 @@ func (s *AssetService) BulkTransfer(ctx context.Context, performedBy bson.Object
 	lookup := func(id bson.ObjectID) (*models.Asset, error) {
 		return s.assets.FindByID(ctx, id)
 	}
-	oks, results, allOK := validateBulkTransferRequest(in, p, lookup, destExists)
+	oks, results, allOK := validateBulkTransferRequest(in, p, lookup, destExists, s.maxBulkAssets)
 	if !allOK {
 		return s.bulkResponse(results), nil
 	}
@@ -280,8 +286,8 @@ func (s *AssetService) BulkTransfer(ctx context.Context, performedBy bson.Object
 func (s *AssetService) BulkChangeStatus(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkStatusRequest) (*models.BulkActionResponse, error) {
 	if n := len(in.AssetIDs); n == 0 {
 		return nil, apperror.BadRequest("assetIds is required")
-	} else if n > MaxBulkAssets {
-		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", MaxBulkAssets))
+	} else if n > s.maxBulkAssets {
+		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", s.maxBulkAssets))
 	}
 
 	attachmentIDs := derefAttachmentIDs(in.AttachmentIDs)
@@ -292,7 +298,7 @@ func (s *AssetService) BulkChangeStatus(ctx context.Context, performedBy bson.Ob
 	lookup := func(id bson.ObjectID) (*models.Asset, error) {
 		return s.assets.FindByID(ctx, id)
 	}
-	oks, results, allOK := validateBulkStatusRequest(in, p, lookup)
+	oks, results, allOK := validateBulkStatusRequest(in, p, lookup, s.maxBulkAssets)
 	if !allOK {
 		return s.bulkResponse(results), nil
 	}
@@ -338,7 +344,7 @@ func (s *AssetService) BulkUpdateCondition(ctx context.Context, performedBy bson
 	lookup := func(id bson.ObjectID) (*models.Asset, error) {
 		return s.assets.FindByID(ctx, id)
 	}
-	toUpdate, skipped, err := classifyBulkCondition(in, p, lookup)
+	toUpdate, skipped, err := classifyBulkCondition(in, p, lookup, s.maxBulkAssets)
 	if err != nil {
 		return nil, err
 	}
@@ -383,6 +389,7 @@ func classifyBulkCondition(
 	in models.BulkConditionUpdate,
 	p Principal,
 	lookup func(bson.ObjectID) (*models.Asset, error),
+	maxBulk int,
 ) ([]bson.ObjectID, []models.BulkConditionSkipped, error) {
 	if !validCondition(in.Condition) {
 		return nil, nil, apperror.BadRequest("invalid condition")
@@ -391,8 +398,8 @@ func classifyBulkCondition(
 	if n == 0 {
 		return nil, nil, apperror.BadRequest("assetIds is required")
 	}
-	if n > MaxBulkAssets {
-		return nil, nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", MaxBulkAssets))
+	if n > maxBulk {
+		return nil, nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", maxBulk))
 	}
 
 	seen := make(map[bson.ObjectID]struct{}, n)
@@ -458,13 +465,14 @@ func validateBulkAssignRequest(
 	in models.BulkAssignRequest,
 	p Principal,
 	lookup func(bson.ObjectID) (*models.Asset, error),
+	maxBulk int,
 ) ([]validatedAssign, []models.BulkActionResult, bool) {
 	n := len(in.AssetIDs)
-	if n == 0 || n > MaxBulkAssets {
+	if n == 0 || n > maxBulk {
 		return nil, []models.BulkActionResult{{
 			AssetID: bson.NilObjectID,
 			Ok:      false,
-			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, MaxBulkAssets)),
+			Error:   errString(fmt.Sprintf("batch size %d outside [1, %d]", n, maxBulk)),
 		}}, false
 	}
 
@@ -529,8 +537,8 @@ func bulkAssignResponse(oks []validatedAssign, results []models.BulkActionResult
 func (s *AssetService) BulkAssign(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkAssignRequest) (*models.BulkAssignResponse, error) {
 	if n := len(in.AssetIDs); n == 0 {
 		return nil, apperror.BadRequest("assetIds is required")
-	} else if n > MaxBulkAssets {
-		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", MaxBulkAssets))
+	} else if n > s.maxBulkAssets {
+		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", s.maxBulkAssets))
 	}
 
 	// Shared for the batch — resolve once. Both "unknown" and "inactive"
@@ -550,7 +558,7 @@ func (s *AssetService) BulkAssign(ctx context.Context, performedBy bson.ObjectID
 	lookup := func(id bson.ObjectID) (*models.Asset, error) {
 		return s.assets.FindByID(ctx, id)
 	}
-	oks, results, allOK := validateBulkAssignRequest(in, p, lookup)
+	oks, results, allOK := validateBulkAssignRequest(in, p, lookup, s.maxBulkAssets)
 	if !allOK {
 		return bulkAssignResponse(nil, results), nil
 	}

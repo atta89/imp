@@ -32,6 +32,10 @@ type AssetService struct {
 	baseURL     string      // FRONTEND_BASE_URL — host of the web app; /scan/<token> URLs encoded in QR codes resolve here, not at the API
 	qrLogo      image.Image // optional center logo for QR images; nil = plain QR
 	attachments *AttachmentService
+	// maxBulkAssets is the effective per-request cap for the synchronous bulk
+	// endpoints, wired from BULK_MAX_ASSETS. Zero at construction falls back to
+	// the MaxBulkAssets default.
+	maxBulkAssets int
 }
 
 func NewAssetService(
@@ -47,20 +51,25 @@ func NewAssetService(
 	baseURL string,
 	qrLogo image.Image,
 	attachments *AttachmentService,
+	maxBulkAssets int,
 ) *AssetService {
+	if maxBulkAssets <= 0 {
+		maxBulkAssets = MaxBulkAssets
+	}
 	return &AssetService{
-		assets:      assets,
-		movements:   movements,
-		venues:      venues,
-		categories:  categories,
-		users:       users,
-		departments: departments,
-		counters:    counters,
-		triggers:    triggers,
-		client:      client,
-		baseURL:     strings.TrimRight(baseURL, "/"),
-		qrLogo:      qrLogo,
-		attachments: attachments,
+		assets:        assets,
+		movements:     movements,
+		venues:        venues,
+		categories:    categories,
+		users:         users,
+		departments:   departments,
+		counters:      counters,
+		triggers:      triggers,
+		client:        client,
+		baseURL:       strings.TrimRight(baseURL, "/"),
+		qrLogo:        qrLogo,
+		attachments:   attachments,
+		maxBulkAssets: maxBulkAssets,
 	}
 }
 
@@ -739,8 +748,8 @@ func (s *AssetService) QRBulkValidate(ctx context.Context, p Principal, ids []bs
 	if len(ids) == 0 {
 		return nil, apperror.BadRequest("at least one asset id is required")
 	}
-	if len(ids) > MaxBulkAssets {
-		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", MaxBulkAssets))
+	if len(ids) > s.maxBulkAssets {
+		return nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", s.maxBulkAssets))
 	}
 	assets, err := s.assets.FindByIDs(ctx, ids)
 	if err != nil {

@@ -101,7 +101,7 @@ func run() error {
 		MaxBytes:      cfg.AttachmentMaxBytes,
 		MaxPerRequest: cfg.AttachmentMaxPerRequest,
 	})
-	assetSvc := service.NewAssetService(assetRepo, movementRepo, venueRepo, categoryRepo, userRepo, departmentRepo, counterRepo, triggers, mongoConn.Client, cfg.FrontendBaseURL, qrLogo, attSvc)
+	assetSvc := service.NewAssetService(assetRepo, movementRepo, venueRepo, categoryRepo, userRepo, departmentRepo, counterRepo, triggers, mongoConn.Client, cfg.FrontendBaseURL, qrLogo, attSvc, cfg.BulkMaxAssets)
 	bulkJobSvc := service.NewBulkJobService(assetSvc, bulkJobRepo, fs, service.BulkJobConfig{
 		MaxAssets:   cfg.BulkMaxAssets,
 		BatchSize:   cfg.BulkBatchSize,

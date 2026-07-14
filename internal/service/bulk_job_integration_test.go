@@ -96,7 +96,7 @@ func setupIT(t *testing.T, cfg BulkJobConfig) *itEnv {
 		repository.NewCategoryRepository(conn.DB), e.users,
 		repository.NewDepartmentRepository(conn.DB),
 		repository.NewCounterRepository(conn.DB),
-		triggers, conn.Client, "http://frontend.test", nil, e.attS)
+		triggers, conn.Client, "http://frontend.test", nil, e.attS, 0)
 	e.bulkS = NewBulkJobService(e.assetS, e.bulk, fs, cfg, logger)
 	return e
 }
