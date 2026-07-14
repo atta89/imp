@@ -448,8 +448,9 @@ func (h *AssetHandler) BulkJobList(c *fiber.Ctx) error {
 	return response.OK(c, models.BulkJobList{Jobs: jobs})
 }
 
-// BulkJobResult streams the rendered QR PDF for a completed qr job. RBAC:
-// requester or admin. 404 until ready or if not a qr job; 410 once the result
+// BulkJobResult streams the rendered artifact for a completed job: the QR
+// label PDF for qr jobs, or the asset-ids JSON for ids jobs. RBAC: requester
+// or admin. 404 until ready or for any other job type; 410 once the result
 // has been cleaned up after its retention window.
 func (h *AssetHandler) BulkJobResult(c *fiber.Ctx) error {
 	id, err := ParseObjectID(c, "jobId")
@@ -463,7 +464,17 @@ func (h *AssetHandler) BulkJobResult(c *fiber.Ctx) error {
 	if !bulkJobReadable(c, doc.RequestedBy) {
 		return apperror.Forbidden("not authorized for this job")
 	}
-	if doc.Type != models.BulkJobTypeQr || doc.Status != models.BulkJobStatusCompleted {
+	completed := doc.Status == models.BulkJobStatusCompleted
+	contentType := ""
+	filename := ""
+	switch {
+	case doc.Type == models.BulkJobTypeQr && completed:
+		contentType = "application/pdf"
+		filename = "asset-labels.pdf"
+	case doc.Type == models.BulkJobTypeIds && completed:
+		contentType = "application/json"
+		filename = "asset-ids.json"
+	default:
 		return apperror.NotFound("job result not available")
 	}
 	if doc.ResultStorageKey == "" {
@@ -474,8 +485,8 @@ func (h *AssetHandler) BulkJobResult(c *fiber.Ctx) error {
 		return err
 	}
 	defer rc.Close()
-	c.Set(fiber.HeaderContentType, "application/pdf")
-	c.Set(fiber.HeaderContentDisposition, `attachment; filename="asset-labels.pdf"`)
+	c.Set(fiber.HeaderContentType, contentType)
+	c.Set(fiber.HeaderContentDisposition, `attachment; filename="`+filename+`"`)
 	return c.SendStream(rc)
 }
 
