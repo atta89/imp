@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -617,6 +618,9 @@ func (s *BulkJobService) runJob(ctx context.Context, job *repository.BulkJobDoc,
 	if job.Type == models.BulkJobTypeQr {
 		return s.runQRJob(ctx, job, workerID)
 	}
+	if job.Type == models.BulkJobTypeIds {
+		return s.runIDsJob(ctx, job, workerID)
+	}
 
 	cursor := job.Cursor
 	for cursor < len(job.AssetIDs) {
@@ -1026,4 +1030,121 @@ func (s *BulkJobService) runQRJob(ctx context.Context, job *repository.BulkJobDo
 		return err
 	}
 	return nil
+}
+
+// ---------------------------------------------------------------------------
+// IDs export job
+// ---------------------------------------------------------------------------
+
+// runIDsJob collects asset ids matching the persisted GET /assets filter set
+// (including venue scope) via keyset-paginated batches, up to the job's limit,
+// and writes a JSON artifact via FileStorage. Read-only: no transactions, no
+// notifications, no per-row errors. On lease-expiry reclaim the scan restarts
+// from zero (InitIDsScan resets counters) — cheap because it is read-only. Like
+// runQRJob it fails fast on an infrastructure error (no whole-job retry).
+func (s *BulkJobService) runIDsJob(ctx context.Context, job *repository.BulkJobDoc, workerID string) error {
+	ip := job.Params.IDs
+	if ip == nil {
+		err := apperror.Internal("ids job missing params", nil)
+		_ = s.bulk.MarkTerminal(ctx, job.ID, workerID, models.BulkJobStatusFailed, err.Error(), time.Now().UTC())
+		return err
+	}
+
+	filter := buildAssetFilter(idsQueryFrom(ip))
+	limit := ip.Limit
+	batchSize := job.BatchSize
+	if batchSize <= 0 {
+		batchSize = s.cfg.IDsBatchSize
+	}
+
+	// Cheap capped count: limit+1 tells us matched (capped) and truncated.
+	cnt, err := s.asset.assets.CountUpTo(ctx, filter, int64(limit)+1)
+	if err != nil {
+		return s.failIDsJob(ctx, job, workerID, err)
+	}
+	truncated := cnt > int64(limit)
+	total := int(cnt)
+	if total > limit {
+		total = limit
+	}
+	batchesTotal := 0
+	if batchSize > 0 {
+		batchesTotal = (total + batchSize - 1) / batchSize
+	}
+
+	if err := s.bulk.InitIDsScan(ctx, job.ID, workerID, total, batchesTotal, time.Now().UTC(), s.cfg.Lease); err != nil {
+		if errors.Is(err, repository.ErrLeaseLost) {
+			s.logger.Warn("bulk_job_lease_lost", slog.String("job", job.ID.Hex()), slog.String("worker", workerID))
+			return nil
+		}
+		return s.failIDsJob(ctx, job, workerID, err)
+	}
+
+	ids := make([]bson.ObjectID, 0, total)
+	var last *bson.ObjectID
+	for len(ids) < limit {
+		batch, err := s.asset.assets.FindIDsAfter(ctx, filter, last, batchSize)
+		if err != nil {
+			return s.failIDsJob(ctx, job, workerID, err)
+		}
+		if len(batch) == 0 {
+			break
+		}
+		for _, id := range batch {
+			if len(ids) >= limit {
+				break
+			}
+			ids = append(ids, id)
+			lc := id
+			last = &lc
+		}
+		// Heartbeat + progress; also the ownership gate before the next batch and
+		// before the artifact write. If the lease was lost, yield without writing.
+		if err := s.bulk.AdvanceIDsScan(ctx, job.ID, workerID, len(ids), time.Now().UTC(), s.cfg.Lease); err != nil {
+			if errors.Is(err, repository.ErrLeaseLost) {
+				s.logger.Warn("bulk_job_lease_lost", slog.String("job", job.ID.Hex()), slog.String("worker", workerID))
+				return nil
+			}
+			return s.failIDsJob(ctx, job, workerID, err)
+		}
+		if len(batch) < batchSize {
+			break // last page
+		}
+	}
+
+	// Write the artifact once, at completion. Zero matches still writes an empty
+	// array so /result is deterministic.
+	res := models.AssetIdsResult{
+		JobID:       job.ID,
+		GeneratedAt: time.Now().UTC(),
+		Count:       len(ids),
+		Truncated:   truncated,
+		AssetIDs:    ids,
+	}
+	if res.AssetIDs == nil {
+		res.AssetIDs = []bson.ObjectID{}
+	}
+	blob, err := json.Marshal(res)
+	if err != nil {
+		return s.failIDsJob(ctx, job, workerID, apperror.Internal("marshal ids result", err))
+	}
+	key, err := storage.NewKeyWithPrefix("bulk-jobs")
+	if err != nil {
+		return s.failIDsJob(ctx, job, workerID, apperror.Internal("ids result key", err))
+	}
+	if err := s.storage.Put(ctx, key, bytes.NewReader(blob), "application/json", int64(len(blob))); err != nil {
+		return s.failIDsJob(ctx, job, workerID, apperror.Internal("store ids result", err))
+	}
+	if err := s.bulk.SetResultKey(ctx, job.ID, key); err != nil {
+		return err
+	}
+	return s.bulk.MarkTerminal(ctx, job.ID, workerID, models.BulkJobStatusCompleted, "", time.Now().UTC())
+}
+
+// failIDsJob marks an ids job failed (guarded on claimedBy) and returns the
+// original error for the worker loop to log.
+func (s *BulkJobService) failIDsJob(ctx context.Context, job *repository.BulkJobDoc, workerID string, cause error) error {
+	s.logger.Error("bulk_job_ids_failed", slog.String("job", job.ID.Hex()), slog.Any("err", cause))
+	_ = s.bulk.MarkTerminal(ctx, job.ID, workerID, models.BulkJobStatusFailed, cause.Error(), time.Now().UTC())
+	return cause
 }
