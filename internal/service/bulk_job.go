@@ -419,6 +419,114 @@ func (s *BulkJobService) EnqueueQR(ctx context.Context, performedBy bson.ObjectI
 	return &job.BulkJob, nil
 }
 
+// EnqueueIDs validates an asset-ids export request synchronously (400 on
+// malformed filter ObjectIds — same messages as GET /assets — or an
+// out-of-range limit) and persists a queued ids job. The caller's venue scope
+// is resolved and stored NOW (authorization evaluated once, at enqueue), so the
+// worker can only ever collect ids the caller could see in the list. Returns
+// 202 + the BulkJob.
+func (s *BulkJobService) EnqueueIDs(ctx context.Context, requestedBy bson.ObjectID, p Principal, in models.BulkIdsRequest) (*models.BulkJob, error) {
+	q, err := BuildAssetListQuery(in.Filters)
+	if err != nil {
+		return nil, err
+	}
+
+	limit := s.cfg.IDsMaxLimit
+	if in.Limit != nil {
+		limit = *in.Limit
+	}
+	if limit < 1 || limit > s.cfg.IDsMaxLimit {
+		return nil, apperror.BadRequest(fmt.Sprintf("limit must be between 1 and ASSET_IDS_MAX_LIMIT (%d)", s.cfg.IDsMaxLimit))
+	}
+
+	params, err := idsParamsFrom(q, p, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	job := &repository.BulkJobDoc{
+		BulkJob: models.BulkJob{
+			Type:            models.BulkJobTypeIds,
+			Status:          models.BulkJobStatusQueued,
+			Counts:          models.BulkJobCounts{}, // total unknown until the scan counts it
+			Progress:        models.BulkJobProgress{},
+			Errors:          []models.BulkJobRowError{}, // API requires non-null errors[]
+			ErrorsTruncated: false,
+			RequestedBy:     requestedBy,
+		},
+		Params:    repository.BulkJobParams{IDs: params},
+		BatchSize: s.cfg.IDsBatchSize,
+	}
+	if err := s.persist(ctx, job, nil); err != nil {
+		return nil, err
+	}
+	return &job.BulkJob, nil
+}
+
+// idsParamsFrom converts a parsed AssetListQuery + principal into the durable
+// IDsParams, resolving venue scope exactly as the GET /assets handler does:
+// admins are unrestricted (Scoped=false); non-admins are pinned to their JWT
+// venue ids (Scoped=true, empty allowed → matches nothing).
+func idsParamsFrom(q AssetListQuery, p Principal, limit int) (*repository.IDsParams, error) {
+	ip := &repository.IDsParams{
+		Venue:        q.Venue,
+		CurrentVenue: q.CurrentVenue,
+		Category:     q.Category,
+		Department:   q.Department,
+		Responsible:  q.Responsible,
+		Away:         q.Away,
+		Overdue:      q.Overdue,
+		Q:            q.Q,
+		Limit:        limit,
+	}
+	if q.Status != "" {
+		st := q.Status
+		ip.Status = &st
+	}
+	if !p.IsAdmin {
+		ip.Scoped = true
+		ids := make([]bson.ObjectID, 0, len(p.VenueIDs))
+		for hex := range p.VenueIDs {
+			id, err := bson.ObjectIDFromHex(hex)
+			if err != nil {
+				return nil, apperror.BadRequest("invalid venue scope")
+			}
+			ids = append(ids, id)
+		}
+		ip.ScopeVenueIDs = ids
+	}
+	return ip, nil
+}
+
+// idsQueryFrom rebuilds the AssetListQuery (including venue scope) from
+// persisted params for the worker. Preserves the nil-vs-empty scope
+// distinction: a scoped job with zero venues yields a non-nil empty Scope
+// (matches nothing), while an unscoped (admin) job leaves Scope nil
+// (unrestricted).
+func idsQueryFrom(ip *repository.IDsParams) AssetListQuery {
+	q := AssetListQuery{
+		Venue:        ip.Venue,
+		CurrentVenue: ip.CurrentVenue,
+		Category:     ip.Category,
+		Department:   ip.Department,
+		Responsible:  ip.Responsible,
+		Away:         ip.Away,
+		Overdue:      ip.Overdue,
+		Q:            ip.Q,
+	}
+	if ip.Status != nil {
+		q.Status = *ip.Status
+	}
+	if ip.Scoped {
+		scope := ip.ScopeVenueIDs
+		if scope == nil {
+			scope = []bson.ObjectID{}
+		}
+		q.Scope = scope
+	}
+	return q
+}
+
 // ---------------------------------------------------------------------------
 // Read paths
 // ---------------------------------------------------------------------------

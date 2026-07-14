@@ -278,6 +278,21 @@ func (h *AssetHandler) QRBulk(c *fiber.Ctx) error {
 	return response.Accepted(c, job)
 }
 
+// BulkIds enqueues an async job that exports asset ids matching a GET /assets
+// filter set and returns 202 + the BulkJob. The JSON artifact is fetched from
+// the /result sub-resource once completed.
+func (h *AssetHandler) BulkIds(c *fiber.Ctx) error {
+	var req models.BulkIdsRequest
+	if err := c.BodyParser(&req); err != nil {
+		return apperror.BadRequest("invalid JSON body")
+	}
+	job, err := h.bulk.EnqueueIDs(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	if err != nil {
+		return handleActionError(c, err)
+	}
+	return response.Accepted(c, job)
+}
+
 // canAccessAsset checks the requester is either admin or has the asset's home
 // or current venue in their scope. This is the venue-scope-only gate used by
 // the asset-management endpoints (GET/PUT /assets/:id, actions, repairs); the
