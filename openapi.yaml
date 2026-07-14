@@ -1012,6 +1012,57 @@ components:
           items:
             allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
 
+    AssetListFilters:
+      type: object
+      description: >-
+        Mirrors the GET /assets query parameters EXACTLY (venue, currentVenue,
+        category, department, status, responsible, away, overdue, q) and is kept
+        in lockstep with that parameter list — the same builder
+        (service.BuildAssetListQuery) parses both. All fields optional; an
+        empty/absent object means "everything visible to the caller" (an
+        unfiltered GET /assets), capped by limit and by the caller's venue scope.
+        Malformed ObjectId values yield the same per-field 400 as GET /assets.
+      properties:
+        venue:        { type: string, pattern: '^[0-9a-fA-F]{24}$', description: 'Home venue id.' }
+        currentVenue: { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+        category:     { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+        department:   { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+        status:       { allOf: [ { $ref: '#/components/schemas/AssetStatus' } ], description: 'Not enum-validated at enqueue (mirrors GET /assets); an unknown value matches zero assets.' }
+        responsible:  { type: string, pattern: '^[0-9a-fA-F]{24}$' }
+        away:         { type: boolean }
+        overdue:      { type: boolean }
+        q:            { type: string, description: free-text on name/serialNumber/assetTag }
+
+    BulkIdsRequest:
+      type: object
+      description: 'Enqueue an async asset-id export. filters mirrors GET /assets; limit caps the result.'
+      properties:
+        filters:
+          allOf: [ { $ref: '#/components/schemas/AssetListFilters' } ]
+        limit:
+          type: integer
+          minimum: 1
+          description: 'Max ids to collect (1..ASSET_IDS_MAX_LIMIT). Optional; defaults to the server cap.'
+
+    AssetIdsResult:
+      type: object
+      description: >-
+        The JSON artifact served by GET /assets/bulk/jobs/{jobId}/result for an
+        ids job. assetIds are ascending by _id (insertion order, NOT name or
+        relevance), as observed during the scan (not a point-in-time snapshot).
+      required: [jobId, generatedAt, count, truncated, assetIds]
+      properties:
+        jobId:
+          allOf: [ { $ref: '#/components/schemas/ObjectId' } ]
+          x-go-name: JobID
+        generatedAt: { type: string, format: date-time }
+        count:       { type: integer, description: 'Number of ids in assetIds (== limit when truncated).' }
+        truncated:   { type: boolean, description: 'True when more assets matched than limit.' }
+        assetIds:
+          type: array
+          x-go-name: AssetIDs
+          items: { allOf: [ { $ref: '#/components/schemas/ObjectId' } ] }
+
     BulkTransferRequest:
       type: object
       required: [assetIds, toVenueId]
@@ -1180,7 +1231,11 @@ components:
 
     BulkJobType:
       type: string
-      enum: [transfer, status, assign, condition, qr]
+      description: >-
+        transfer/status/assign/condition mutate assets in batched transactions;
+        qr renders a combined PDF artifact; ids exports asset _ids matching a
+        GET /assets filter set as a JSON artifact.
+      enum: [transfer, status, assign, condition, qr, ids]
 
     BulkJobStatus:
       type: string
@@ -2095,6 +2150,41 @@ paths:
                   data: { $ref: '#/components/schemas/BulkJob' }
         '400': { $ref: '#/components/responses/ErrorResponse' }
 
+  /assets/bulk/ids:
+    post:
+      tags: [assets]
+      summary: 'Enqueue an async job that exports asset ids matching a GET /assets filter set.'
+      description: >-
+        Collects asset _ids ONLY (no documents) matching the exact same filter
+        set as GET /assets — including venue scoping, so a manager/staff can only
+        ever export ids of assets they could see in the list. Deliberately routed
+        under /assets/bulk/ (not /assets/ids) to avoid colliding with the
+        /assets/:id param route. Enqueue-time validation is synchronous (400):
+        malformed ObjectId filters use the same per-field errors as GET /assets,
+        and limit must be 1..ASSET_IDS_MAX_LIMIT (optional, defaults to the cap).
+        Returns 202 + a BulkJob; poll GET /assets/bulk/jobs/{jobId} and download
+        the JSON artifact from GET /assets/bulk/jobs/{jobId}/result once
+        completed. The scan is keyset-paginated and read-only; ids are ascending
+        by _id as observed during the scan (not a point-in-time snapshot).
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BulkIdsRequest' }
+      responses:
+        '202':
+          description: 'Job accepted. Poll the returned BulkJob; the JSON artifact is served from the /result sub-resource.'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data: { $ref: '#/components/schemas/BulkJob' }
+        '400': { $ref: '#/components/responses/ErrorResponse' }
+
   /assets/bulk/transfer:
     post:
       tags: [assets]
@@ -2275,19 +2365,21 @@ paths:
         schema: { $ref: '#/components/schemas/ObjectId' }
     get:
       tags: [assets]
-      summary: 'Stream the rendered QR PDF for a completed qr job.'
+      summary: 'Stream a completed job artifact: the QR PDF (qr jobs) or the asset-ids JSON (ids jobs).'
       description: >-
         RBAC: the requesting principal or an admin. Returns 404 while the job is
-        not yet completed or if the job is not a qr job. After the result
-        retention window (BULK_RESULT_TTL_DAYS) the rendered PDF is deleted and
-        this endpoint returns 410 Gone.
+        not yet completed or if the job type has no downloadable artifact. For a
+        qr job the body is application/pdf; for an ids job it is application/json
+        matching AssetIdsResult. After the retention window (BULK_RESULT_TTL_DAYS)
+        the artifact is deleted and this endpoint returns 410 Gone.
       security:
         - bearerAuth: []
       responses:
         '200':
-          description: combined PDF of labels
+          description: 'The job artifact (PDF for qr jobs, JSON for ids jobs).'
           content:
             application/pdf: { schema: { type: string, format: binary } }
+            application/json: { schema: { $ref: '#/components/schemas/AssetIdsResult' } }
         '401': { $ref: '#/components/responses/ErrorResponse' }
         '403': { $ref: '#/components/responses/ErrorResponse' }
         '404': { $ref: '#/components/responses/ErrorResponse' }

@@ -51,6 +51,7 @@ const (
 const (
 	BulkJobTypeAssign    BulkJobType = "assign"
 	BulkJobTypeCondition BulkJobType = "condition"
+	BulkJobTypeIds       BulkJobType = "ids"
 	BulkJobTypeQr        BulkJobType = "qr"
 	BulkJobTypeStatus    BulkJobType = "status"
 	BulkJobTypeTransfer  BulkJobType = "transfer"
@@ -176,6 +177,38 @@ type Asset struct {
 
 // AssetCondition defines model for AssetCondition.
 type AssetCondition string
+
+// AssetIdsResult The JSON artifact served by GET /assets/bulk/jobs/{jobId}/result for an ids job. assetIds are ascending by _id (insertion order, NOT name or relevance), as observed during the scan (not a point-in-time snapshot).
+type AssetIdsResult struct {
+	AssetIDs []ObjectId `json:"assetIds"`
+
+	// Count Number of ids in assetIds (== limit when truncated).
+	Count       int       `json:"count"`
+	GeneratedAt time.Time `json:"generatedAt"`
+	JobID       ObjectId  `json:"jobId"`
+
+	// Truncated True when more assets matched than limit.
+	Truncated bool `json:"truncated"`
+}
+
+// AssetListFilters Mirrors the GET /assets query parameters EXACTLY (venue, currentVenue, category, department, status, responsible, away, overdue, q) and is kept in lockstep with that parameter list — the same builder (service.BuildAssetListQuery) parses both. All fields optional; an empty/absent object means "everything visible to the caller" (an unfiltered GET /assets), capped by limit and by the caller's venue scope. Malformed ObjectId values yield the same per-field 400 as GET /assets.
+type AssetListFilters struct {
+	Away         *bool   `json:"away,omitempty"`
+	Category     *string `json:"category,omitempty"`
+	CurrentVenue *string `json:"currentVenue,omitempty"`
+	Department   *string `json:"department,omitempty"`
+	Overdue      *bool   `json:"overdue,omitempty"`
+
+	// Q free-text on name/serialNumber/assetTag
+	Q           *string `json:"q,omitempty"`
+	Responsible *string `json:"responsible,omitempty"`
+
+	// Status Not enum-validated at enqueue (mirrors GET /assets); an unknown value matches zero assets.
+	Status *AssetStatus `json:"status,omitempty"`
+
+	// Venue Home venue id.
+	Venue *string `json:"venue,omitempty"`
+}
 
 // AssetStatus defines model for AssetStatus.
 type AssetStatus string
@@ -328,6 +361,14 @@ type BulkConditionUpdate struct {
 	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
+// BulkIdsRequest Enqueue an async asset-id export. filters mirrors GET /assets; limit caps the result.
+type BulkIdsRequest struct {
+	Filters *AssetListFilters `json:"filters,omitempty"`
+
+	// Limit Max ids to collect (1..ASSET_IDS_MAX_LIMIT). Optional; defaults to the server cap.
+	Limit *int `json:"limit,omitempty"`
+}
+
 // BulkJob defines model for BulkJob.
 type BulkJob struct {
 	CompletedAt *time.Time    `bson:"completedAt,omitempty" json:"completedAt,omitempty"`
@@ -385,7 +426,7 @@ type BulkJobRowError struct {
 // BulkJobStatus queued (awaiting a worker), running (claimed, batches executing), completed (all batches done, zero row errors), completed_with_errors (done, some rows failed/skipped-as-error), failed (zero successes or a fatal infrastructure error).
 type BulkJobStatus string
 
-// BulkJobType defines model for BulkJobType.
+// BulkJobType transfer/status/assign/condition mutate assets in batched transactions; qr renders a combined PDF artifact; ids exports asset _ids matching a GET /assets filter set as a JSON artifact.
 type BulkJobType string
 
 // BulkQrRequest defines model for BulkQrRequest.
@@ -1088,6 +1129,9 @@ type PostAssetsJSONRequestBody = CreateAssetRequest
 
 // PostAssetsBulkAssignJSONRequestBody defines body for PostAssetsBulkAssign for application/json ContentType.
 type PostAssetsBulkAssignJSONRequestBody = BulkAssignRequest
+
+// PostAssetsBulkIdsJSONRequestBody defines body for PostAssetsBulkIds for application/json ContentType.
+type PostAssetsBulkIdsJSONRequestBody = BulkIdsRequest
 
 // PostAssetsBulkStatusJSONRequestBody defines body for PostAssetsBulkStatus for application/json ContentType.
 type PostAssetsBulkStatusJSONRequestBody = BulkStatusRequest
