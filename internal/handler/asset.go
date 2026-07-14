@@ -292,50 +292,34 @@ func canAccessAsset(c *fiber.Ctx, a *models.Asset) bool {
 }
 
 func parseAssetListQuery(c *fiber.Ctx) (service.AssetListQuery, error) {
-	q := service.AssetListQuery{}
-
+	f := &models.AssetListFilters{}
 	if v := c.Query("venue"); v != "" {
-		id, err := bson.ObjectIDFromHex(v)
-		if err != nil {
-			return q, apperror.BadRequest("invalid venue id")
-		}
-		q.Venue = &id
+		f.Venue = &v
 	}
 	if v := c.Query("currentVenue"); v != "" {
-		id, err := bson.ObjectIDFromHex(v)
-		if err != nil {
-			return q, apperror.BadRequest("invalid currentVenue id")
-		}
-		q.CurrentVenue = &id
+		f.CurrentVenue = &v
 	}
 	if v := c.Query("category"); v != "" {
-		id, err := bson.ObjectIDFromHex(v)
-		if err != nil {
-			return q, apperror.BadRequest("invalid category id")
-		}
-		q.Category = &id
+		f.Category = &v
 	}
 	if v := c.Query("department"); v != "" {
-		id, err := bson.ObjectIDFromHex(v)
-		if err != nil {
-			return q, apperror.BadRequest("invalid department id")
-		}
-		q.Department = &id
+		f.Department = &v
 	}
 	if v := c.Query("responsible"); v != "" {
-		id, err := bson.ObjectIDFromHex(v)
-		if err != nil {
-			return q, apperror.BadRequest("invalid responsible id")
-		}
-		q.Responsible = &id
+		f.Responsible = &v
 	}
 	if v := c.Query("status"); v != "" {
-		q.Status = models.AssetStatus(v)
+		s := models.AssetStatus(v)
+		f.Status = &s
 	}
-	q.Away = parseBoolQuery(c.Query("away"))
-	q.Overdue = parseBoolQuery(c.Query("overdue"))
-	q.Q = strings.TrimSpace(c.Query("q"))
-	return q, nil
+	away := parseBoolQuery(c.Query("away"))
+	overdue := parseBoolQuery(c.Query("overdue"))
+	f.Away = &away
+	f.Overdue = &overdue
+	if v := strings.TrimSpace(c.Query("q")); v != "" {
+		f.Q = &v
+	}
+	return service.BuildAssetListQuery(f)
 }
 
 func parseBoolQuery(s string) bool {

@@ -901,6 +901,55 @@ func validCondition(c models.AssetCondition) bool {
 	return false
 }
 
+// BuildAssetListQuery parses the shared AssetListFilters into an AssetListQuery,
+// applying the SAME per-field validation as the GET /assets query parser
+// (malformed ObjectId → the same 400 messages; status is NOT enum-validated,
+// matching the list endpoint — an unknown value simply matches zero assets).
+// It does NOT set Scope; the caller injects venue scope exactly as the list
+// handler does. This is the single parse+validate path shared by GET /assets and
+// POST /assets/bulk/ids, so the two can never drift.
+func BuildAssetListQuery(f *models.AssetListFilters) (AssetListQuery, error) {
+	q := AssetListQuery{}
+	if f == nil {
+		return q, nil
+	}
+	parseID := func(v *string, msg string) (*bson.ObjectID, error) {
+		if v == nil || *v == "" {
+			return nil, nil
+		}
+		id, err := bson.ObjectIDFromHex(*v)
+		if err != nil {
+			return nil, apperror.BadRequest(msg)
+		}
+		return &id, nil
+	}
+	var err error
+	if q.Venue, err = parseID(f.Venue, "invalid venue id"); err != nil {
+		return q, err
+	}
+	if q.CurrentVenue, err = parseID(f.CurrentVenue, "invalid currentVenue id"); err != nil {
+		return q, err
+	}
+	if q.Category, err = parseID(f.Category, "invalid category id"); err != nil {
+		return q, err
+	}
+	if q.Department, err = parseID(f.Department, "invalid department id"); err != nil {
+		return q, err
+	}
+	if q.Responsible, err = parseID(f.Responsible, "invalid responsible id"); err != nil {
+		return q, err
+	}
+	if f.Status != nil {
+		q.Status = *f.Status // no enum validation — mirrors GET /assets
+	}
+	q.Away = f.Away != nil && *f.Away
+	q.Overdue = f.Overdue != nil && *f.Overdue
+	if f.Q != nil {
+		q.Q = strings.TrimSpace(*f.Q)
+	}
+	return q, nil
+}
+
 // buildAssetFilter combines list-query parameters and the requester's venue
 // scope into a single Mongo filter document.
 func buildAssetFilter(q AssetListQuery) bson.M {
