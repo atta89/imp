@@ -195,9 +195,14 @@ func (r *AssetRepository) List(ctx context.Context, filter bson.M, page, limit i
 		return nil, 0, apperror.Internal("count assets", err)
 	}
 	skip := int64((page - 1) * limit)
+	// Sort by (createdAt, _id) descending — newest first, with _id as a stable
+	// tiebreak. createdAt is not unique (InsertMany stamps one timestamp across a
+	// batch), so without the _id tiebreak equal-createdAt assets could shuffle
+	// between offset pages and be skipped or duplicated. Matches the ids-export
+	// scan order and is backed by the {createdAt:-1,_id:-1} index.
 	cur, err := r.coll.Find(ctx, filter,
 		options.Find().
-			SetSort(bson.D{{Key: "createdAt", Value: -1}}).
+			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
 			SetSkip(skip).
 			SetLimit(int64(limit)),
 	)
