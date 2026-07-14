@@ -212,6 +212,57 @@ func (r *AssetRepository) List(ctx context.Context, filter bson.M, page, limit i
 	return out, total, nil
 }
 
+// CountUpTo counts documents matching filter, stopping at `limit`. Used by the
+// ids-export job to set the matched count and truncated flag cheaply without a
+// full-collection count. Passing limit = wantedMax+1 lets the caller detect
+// "more than wantedMax matched" in a single count.
+func (r *AssetRepository) CountUpTo(ctx context.Context, filter bson.M, limit int64) (int64, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	n, err := r.coll.CountDocuments(ctx, filter, options.Count().SetLimit(limit))
+	if err != nil {
+		return 0, apperror.Internal("count assets up to limit", err)
+	}
+	return n, nil
+}
+
+// FindIDsAfter returns up to batchSize asset ids matching filter with _id > after
+// (or from the start when after is nil), ascending by _id, projecting _id only.
+// This is the keyset-pagination primitive for the ids-export scan: never skip,
+// never an unbounded Find().All(). The caller-supplied filter is never mutated —
+// the keyset bound is combined via a fresh $and wrapper.
+func (r *AssetRepository) FindIDsAfter(ctx context.Context, filter bson.M, after *bson.ObjectID, batchSize int) ([]bson.ObjectID, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	q := filter
+	if after != nil {
+		q = bson.M{"$and": bson.A{filter, bson.M{"_id": bson.M{"$gt": *after}}}}
+	}
+	cur, err := r.coll.Find(ctx, q,
+		options.Find().
+			SetSort(bson.D{{Key: "_id", Value: 1}}).
+			SetLimit(int64(batchSize)).
+			SetProjection(bson.M{"_id": 1}),
+	)
+	if err != nil {
+		return nil, apperror.Internal("find asset ids", err)
+	}
+	defer cur.Close(ctx)
+	var rows []struct {
+		ID bson.ObjectID `bson:"_id"`
+	}
+	if err := cur.All(ctx, &rows); err != nil {
+		return nil, apperror.Internal("decode asset ids", err)
+	}
+	out := make([]bson.ObjectID, len(rows))
+	for i := range rows {
+		out[i] = rows[i].ID
+	}
+	return out, nil
+}
+
 func (r *AssetRepository) Update(ctx context.Context, id bson.ObjectID, set bson.M) (*models.Asset, error) {
 	set["updatedAt"] = time.Now().UTC()
 	res := r.coll.FindOneAndUpdate(ctx,
