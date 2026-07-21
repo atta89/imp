@@ -38,13 +38,16 @@ func newTestDB(t *testing.T) *database.Mongo {
 }
 
 // seedAwayAsset inserts one asset with home != current (so it is "away").
-// createdAt is base+offset so a larger offset sorts newer.
-func seedAwayAsset(t *testing.T, conn *database.Mongo, base time.Time, offset int) bson.ObjectID {
+// createdAt is base+offset so a larger offset sorts newer. uniq drives the
+// unique assetTag/qrToken suffix independently of offset, so callers that
+// intentionally share the same offset (e.g. to force a createdAt tie) don't
+// collide on the assets collection's unique indexes.
+func seedAwayAsset(t *testing.T, conn *database.Mongo, base time.Time, offset, uniq int) bson.ObjectID {
 	t.Helper()
 	id := bson.NewObjectID()
 	a := models.Asset{
 		ID:             id,
-		AssetTag:       fmt.Sprintf("AWAY-%d", offset),
+		AssetTag:       fmt.Sprintf("AWAY-%d", uniq),
 		Name:           "away",
 		CategoryID:     bson.NewObjectID(),
 		HomeVenueID:    bson.NewObjectID(),
@@ -52,7 +55,7 @@ func seedAwayAsset(t *testing.T, conn *database.Mongo, base time.Time, offset in
 		Status:         models.Available,
 		Condition:      models.Good,
 		IsActive:       true,
-		QrToken:        fmt.Sprintf("qr-%d", offset),
+		QrToken:        fmt.Sprintf("qr-%d", uniq),
 		CreatedAt:      base.Add(time.Duration(offset) * time.Second),
 		UpdatedAt:      base,
 	}
@@ -95,7 +98,7 @@ func TestAssetFindPageIT_AwayCoverage(t *testing.T) {
 	const n = 57
 	want := make(map[bson.ObjectID]struct{}, n)
 	for i := 0; i < n; i++ {
-		want[seedAwayAsset(t, conn, base, i)] = struct{}{}
+		want[seedAwayAsset(t, conn, base, i, i)] = struct{}{}
 	}
 
 	got := drainAway(t, repo, 10)
@@ -124,7 +127,7 @@ func TestAssetFindPageIT_TieBreak(t *testing.T) {
 	const n = 30
 	want := make(map[bson.ObjectID]struct{}, n)
 	for i := 0; i < n; i++ {
-		want[seedAwayAsset(t, conn, base, 0)] = struct{}{}
+		want[seedAwayAsset(t, conn, base, 0, i)] = struct{}{}
 	}
 	got := drainAway(t, repo, 7)
 	if len(got) != n {
