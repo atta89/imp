@@ -351,12 +351,9 @@ func (h *AssetHandler) BulkTransfer(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	job, diag, err := h.bulk.EnqueueTransfer(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, err := h.bulk.EnqueueTransfer(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
-	}
-	if diag != nil {
-		return response.OK(c, diag) // strict per-row validation failure: today's shape, no job
 	}
 	return response.Accepted(c, job)
 }
@@ -366,12 +363,9 @@ func (h *AssetHandler) BulkStatus(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	job, diag, err := h.bulk.EnqueueStatus(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, err := h.bulk.EnqueueStatus(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
-	}
-	if diag != nil {
-		return response.OK(c, diag)
 	}
 	return response.Accepted(c, job)
 }
@@ -381,12 +375,9 @@ func (h *AssetHandler) BulkAssign(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return apperror.BadRequest("invalid JSON body")
 	}
-	job, diag, err := h.bulk.EnqueueAssign(c.Context(), middleware.CurrentUserID(c), principal(c), req)
+	job, err := h.bulk.EnqueueAssign(c.Context(), middleware.CurrentUserID(c), principal(c), req)
 	if err != nil {
 		return handleActionError(c, err)
-	}
-	if diag != nil {
-		return response.OK(c, diag)
 	}
 	return response.Accepted(c, job)
 }

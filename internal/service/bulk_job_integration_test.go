@@ -201,10 +201,10 @@ func TestBulkJobIT_TransferEndToEnd(t *testing.T) {
 		ids = append(ids, e.seedAsset(home, home, models.InUse, models.Good, nil))
 	}
 
-	job, diag, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest})
-	if err != nil || diag != nil || job == nil {
-		t.Fatalf("enqueue: job=%v diag=%v err=%v", job, diag, err)
+	if err != nil || job == nil {
+		t.Fatalf("enqueue: job=%v err=%v", job, err)
 	}
 	if job.Status != models.BulkJobStatusQueued {
 		t.Fatalf("status=%s want queued", job.Status)
@@ -253,10 +253,10 @@ func TestBulkJobIT_AssignSkipsAndDigestOnce(t *testing.T) {
 		toAssign = append(toAssign, id)
 	}
 
-	job, diag, err := e.bulkS.EnqueueAssign(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueAssign(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkAssignRequest{AssetIDs: ids, ResponsibleUserID: custodian})
-	if err != nil || diag != nil || job == nil {
-		t.Fatalf("enqueue: diag=%v err=%v", diag, err)
+	if err != nil || job == nil {
+		t.Fatalf("enqueue: job=%v err=%v", job, err)
 	}
 
 	doc := e.runToCompletion(job)
@@ -287,7 +287,7 @@ func TestBulkJobIT_AssignUnknownUserIs400AtEnqueue(t *testing.T) {
 	e := setupIT(t, BulkJobConfig{BatchSize: 2})
 	home := e.seedVenue(true)
 	id := e.seedAsset(home, home, models.InUse, models.Good, nil)
-	_, _, err := e.bulkS.EnqueueAssign(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	_, err := e.bulkS.EnqueueAssign(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkAssignRequest{AssetIDs: []bson.ObjectID{id}, ResponsibleUserID: bson.NewObjectID()})
 	if err == nil {
 		t.Fatal("expected 400 for unknown responsibleUserId")
@@ -299,31 +299,27 @@ func TestBulkJobIT_AssignUnknownUserIs400AtEnqueue(t *testing.T) {
 	}
 }
 
-func TestBulkJobIT_StatusInvalidTransitionStrictVsTOCTOU(t *testing.T) {
+// TestBulkJobIT_StatusInvalidTransitionBecomesRowError covers both an
+// invalid-at-enqueue transition and a TOCTOU one (valid at enqueue,
+// invalidated before execution): planBulkStatus does not reject either at
+// enqueue time (unlike a no-op, an illegal-but-non-no-op transition is not a
+// skip either) — both flow through to applyRow and surface as row errors,
+// exactly like an illegal condition change does for the reference endpoint.
+func TestBulkJobIT_StatusInvalidTransitionBecomesRowError(t *testing.T) {
 	e := setupIT(t, BulkJobConfig{BatchSize: 2, MaxAttempts: 3, ErrorCap: 100, Lease: time.Minute})
 	home := e.seedVenue(true)
 
-	// Strict: an invalid transition at enqueue → 200 diagnostics, no job.
 	retired := e.seedAsset(home, home, models.Retired, models.Good, nil) // retired→available not allowed
-	_, diag, err := e.bulkS.EnqueueStatus(context.Background(), adminPrincipal().UserID, adminPrincipal(),
-		models.BulkStatusRequest{AssetIDs: []bson.ObjectID{retired}, Status: models.Available})
-	if err != nil {
-		t.Fatalf("unexpected err: %v", err)
-	}
-	if diag == nil || diag.Failed != 1 {
-		t.Fatalf("expected strict per-row diagnostics with 1 failure, got %+v", diag)
-	}
-
-	// TOCTOU: valid at enqueue, invalidated before execution → row error,
-	// job ends completed_with_errors.
-	a := e.seedAsset(home, home, models.InUse, models.Good, nil) // in_use→available valid
+	a := e.seedAsset(home, home, models.InUse, models.Good, nil)         // in_use→available valid
 	b := e.seedAsset(home, home, models.InUse, models.Good, nil)
-	job, diag, err := e.bulkS.EnqueueStatus(context.Background(), adminPrincipal().UserID, adminPrincipal(),
-		models.BulkStatusRequest{AssetIDs: []bson.ObjectID{a, b}, Status: models.Available})
-	if err != nil || diag != nil || job == nil {
-		t.Fatalf("enqueue: diag=%v err=%v", diag, err)
+
+	job, err := e.bulkS.EnqueueStatus(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+		models.BulkStatusRequest{AssetIDs: []bson.ObjectID{retired, a, b}, Status: models.Available})
+	if err != nil || job == nil {
+		t.Fatalf("enqueue: job=%v err=%v", job, err)
 	}
-	// Mutate `a` to Retired after enqueue so the transition is now invalid.
+	// TOCTOU: mutate `a` to Retired after enqueue so its transition is now
+	// invalid too — same not-a-skip, row-error-at-execution outcome as `retired`.
 	if _, err := e.assets.Update(context.Background(), a, bson.M{"status": models.Retired}); err != nil {
 		t.Fatalf("mutate: %v", err)
 	}
@@ -332,11 +328,15 @@ func TestBulkJobIT_StatusInvalidTransitionStrictVsTOCTOU(t *testing.T) {
 	if doc.Status != models.BulkJobStatusCompletedWithErrors {
 		t.Fatalf("status=%s want completed_with_errors", doc.Status)
 	}
-	if doc.Counts.Succeeded != 1 || doc.Counts.Failed != 1 {
-		t.Fatalf("counts=%+v want 1 succ / 1 fail", doc.Counts)
+	if doc.Counts.Succeeded != 1 || doc.Counts.Failed != 2 {
+		t.Fatalf("counts=%+v want 1 succ / 2 fail", doc.Counts)
 	}
-	if len(doc.Errors) != 1 || doc.Errors[0].AssetID != a {
-		t.Fatalf("expected 1 row error for asset a, got %+v", doc.Errors)
+	errIDs := map[bson.ObjectID]bool{}
+	for _, e := range doc.Errors {
+		errIDs[e.AssetID] = true
+	}
+	if !errIDs[retired] || !errIDs[a] {
+		t.Fatalf("expected row errors for retired and a, got %+v", doc.Errors)
 	}
 	// No notifications for status jobs.
 	if e.outboxCount(bson.M{}) != 0 {
@@ -375,7 +375,7 @@ func TestBulkJobIT_CursorResumeNoDoubleApply(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		ids = append(ids, e.seedAsset(home, home, models.InUse, models.Good, nil))
 	}
-	job, _, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -420,7 +420,7 @@ func TestBulkJobIT_TwoWorkersOneJob(t *testing.T) {
 	for i := 0; i < 6; i++ {
 		ids = append(ids, e.seedAsset(home, home, models.InUse, models.Good, nil))
 	}
-	job, _, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -461,7 +461,7 @@ func TestBulkJobIT_LeaseExpiryReclaim(t *testing.T) {
 	e := setupIT(t, BulkJobConfig{BatchSize: 2, Lease: time.Minute})
 	home := e.seedVenue(true)
 	id := e.seedAsset(home, home, models.InUse, models.Good, nil)
-	job, _, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: []bson.ObjectID{id}, ToVenueID: e.seedVenue(true)})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
@@ -495,7 +495,7 @@ func TestBulkJobIT_ErrorCapTruncation(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		ids = append(ids, bson.NewObjectID())
 	}
-	job, _, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest, ValidOnly: ptr(true)})
 	if err != nil {
 		t.Fatalf("enqueue validOnly: %v", err)
@@ -517,10 +517,10 @@ func TestBulkJobIT_DedupeAtEnqueue(t *testing.T) {
 	home := e.seedVenue(true)
 	dest := e.seedVenue(true)
 	id := e.seedAsset(home, home, models.InUse, models.Good, nil)
-	job, diag, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
 		models.BulkTransferRequest{AssetIDs: []bson.ObjectID{id, id, id}, ToVenueID: dest})
-	if err != nil || diag != nil {
-		t.Fatalf("enqueue: diag=%v err=%v", diag, err)
+	if err != nil {
+		t.Fatalf("enqueue: %v", err)
 	}
 	if job.Counts.Total != 1 {
 		t.Fatalf("total=%d want 1 (deduped)", job.Counts.Total)
@@ -546,7 +546,7 @@ func TestBulkJobIT_AttachmentReservationSurvivesSweep(t *testing.T) {
 		t.Fatalf("seed attachment: %v", err)
 	}
 
-	job, _, err := e.bulkS.EnqueueTransfer(context.Background(), uploader, Principal{IsAdmin: true, UserID: uploader},
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), uploader, Principal{IsAdmin: true, UserID: uploader},
 		models.BulkTransferRequest{AssetIDs: []bson.ObjectID{id}, ToVenueID: dest, AttachmentIDs: &[]bson.ObjectID{attID}})
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)

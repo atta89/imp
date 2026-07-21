@@ -463,43 +463,6 @@ func (s *AssetService) UpdateCondition(ctx context.Context, id, performedBy bson
 	return updated, nil
 }
 
-// updateConditionForBulk is the txn-only variant of UpdateCondition used by
-// BulkUpdateCondition. It performs no attachment validation — the caller
-// (BulkUpdateCondition) validates the batch's shared attachment set ONCE
-// up front, because re-validating per item would fail on the second item
-// onward (the first item's Link already flips those attachments to
-// already_linked). FindByID stays per-item so the race check (asset
-// deleted/changed between planning and applying) is preserved.
-func (s *AssetService) updateConditionForBulk(ctx context.Context, id, performedBy bson.ObjectID, in models.ConditionUpdate, attachmentIDs []bson.ObjectID) (*models.Asset, error) {
-	a, err := s.assets.FindByID(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateConditionChange(a.Condition, in.Condition); err != nil {
-		return nil, err
-	}
-
-	sess, err := s.client.StartSession()
-	if err != nil {
-		return nil, apperror.Internal("start session", err)
-	}
-	defer sess.EndSession(ctx)
-
-	var updated *models.Asset
-	_, err = sess.WithTransaction(ctx, func(sc context.Context) (any, error) {
-		u, err := s.applyConditionUpdate(sc, a, performedBy, in, attachmentIDs)
-		if err != nil {
-			return nil, err
-		}
-		updated = u
-		return nil, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return updated, nil
-}
-
 // applyConditionUpdate updates asset.condition and appends a
 // condition_change movement. Extracted from UpdateCondition so the bare
 // write logic is unit-testable and consistent in shape with the other

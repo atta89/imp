@@ -112,22 +112,6 @@ func (s *BulkJobService) mapLookup(ctx context.Context, ids []bson.ObjectID) (fu
 	}, nil
 }
 
-func assetIDsOfTransfer(oks []validatedTransfer) []bson.ObjectID {
-	out := make([]bson.ObjectID, 0, len(oks))
-	for _, v := range oks {
-		out = append(out, v.asset.ID)
-	}
-	return out
-}
-
-func assetIDsOfStatus(oks []validatedStatus) []bson.ObjectID {
-	out := make([]bson.ObjectID, 0, len(oks))
-	for _, v := range oks {
-		out = append(out, v.asset.ID)
-	}
-	return out
-}
-
 // hasGlobalFailure reports whether the diagnostics contain a whole-batch
 // (synthetic, NilObjectID) failure row — e.g. dest_venue_forbidden. Such a
 // failure can never be salvaged by validOnly.
@@ -224,150 +208,123 @@ func (s *BulkJobService) persist(ctx context.Context, job *repository.BulkJobDoc
 
 // ---------------------------------------------------------------------------
 // Enqueue: one function per endpoint. Each returns exactly one of:
-//   (*BulkJob, nil, nil)          → 202
-//   (nil, *diagnostics, nil)      → 200 today's per-row diagnostics (strict fail)
-//   (nil, nil, err)               → 400 / attachment-validation error
+//   (*BulkJob, nil)      → 202
+//   (nil, err)           → 400 / attachment-validation error
 // ---------------------------------------------------------------------------
 
-func (s *BulkJobService) EnqueueTransfer(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkTransferRequest) (*models.BulkJob, *models.BulkActionResponse, error) {
+func (s *BulkJobService) EnqueueTransfer(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkTransferRequest) (*models.BulkJob, error) {
 	ids, err := s.dedupeAndCap(in.AssetIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	in.AssetIDs = ids
 
 	attachmentIDs := derefAttachmentIDs(in.AttachmentIDs)
 	if err := s.asset.validateAttachments(ctx, attachmentIDs, performedBy); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	destExists := true
 	if _, err := s.asset.venues.FindByID(ctx, in.ToVenueID); err != nil {
-		if appErr, ok := apperror.As(err); !ok || appErr.Kind != apperror.KindNotFound {
-			return nil, nil, err
+		if !isKind(err, apperror.KindNotFound) {
+			return nil, err
 		}
 		destExists = false
 	}
 
 	lookup, err := s.mapLookup(ctx, ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	oks, results, allOK := validateBulkTransferRequest(in, p, lookup, destExists, s.cfg.MaxAssets)
-
-	validOnly := in.ValidOnly != nil && *in.ValidOnly
-	if !allOK && (!validOnly || hasGlobalFailure(results)) {
-		return nil, s.asset.bulkResponse(results), nil
+	toUpdate, skipped, err := planBulkTransfer(in, p, lookup, destExists, s.cfg.MaxAssets)
+	if err != nil {
+		return nil, err
 	}
 
-	processIDs := assetIDsOfTransfer(oks)
-	rowErrs := rowErrorsFrom(results)
 	params := repository.BulkJobParams{
 		ToVenueID:          &in.ToVenueID,
 		ExpectedReturnDate: in.ExpectedReturnDate,
 		Notes:              in.Notes,
 	}
-	job := s.newJobDoc(models.BulkJobTypeTransfer, performedBy, processIDs, attachmentIDs, validOnly, params, len(ids), len(rowErrs), 0, rowErrs)
+	job := s.newJobDoc(models.BulkJobTypeTransfer, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &job.BulkJob, nil, nil
+	return &job.BulkJob, nil
 }
 
-func (s *BulkJobService) EnqueueStatus(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkStatusRequest) (*models.BulkJob, *models.BulkActionResponse, error) {
+func (s *BulkJobService) EnqueueStatus(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkStatusRequest) (*models.BulkJob, error) {
 	ids, err := s.dedupeAndCap(in.AssetIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	in.AssetIDs = ids
 
 	attachmentIDs := derefAttachmentIDs(in.AttachmentIDs)
 	if err := s.asset.validateAttachments(ctx, attachmentIDs, performedBy); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	lookup, err := s.mapLookup(ctx, ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	oks, results, allOK := validateBulkStatusRequest(in, p, lookup, s.cfg.MaxAssets)
-
-	validOnly := in.ValidOnly != nil && *in.ValidOnly
-	if !allOK && (!validOnly || hasGlobalFailure(results)) {
-		return nil, s.asset.bulkResponse(results), nil
+	toUpdate, skipped, err := planBulkStatus(in, p, lookup, s.cfg.MaxAssets)
+	if err != nil {
+		return nil, err
 	}
 
-	processIDs := assetIDsOfStatus(oks)
-	rowErrs := rowErrorsFrom(results)
 	params := repository.BulkJobParams{Status: &in.Status, Reason: in.Reason}
-	job := s.newJobDoc(models.BulkJobTypeStatus, performedBy, processIDs, attachmentIDs, validOnly, params, len(ids), len(rowErrs), 0, rowErrs)
+	job := s.newJobDoc(models.BulkJobTypeStatus, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &job.BulkJob, nil, nil
+	return &job.BulkJob, nil
 }
 
-func (s *BulkJobService) EnqueueAssign(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkAssignRequest) (*models.BulkJob, *models.BulkAssignResponse, error) {
+func (s *BulkJobService) EnqueueAssign(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkAssignRequest) (*models.BulkJob, error) {
 	ids, err := s.dedupeAndCap(in.AssetIDs)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	in.AssetIDs = ids
 
-	// Unknown/inactive target user is always a whole-request 400.
+	// Unknown/inactive target user is always a whole-request 400 (request-level).
 	u, err := s.asset.users.FindByID(ctx, in.ResponsibleUserID)
 	if err != nil {
 		if isKind(err, apperror.KindNotFound) {
-			return nil, nil, apperror.BadRequest("responsibleUserId does not resolve to a known user")
+			return nil, apperror.BadRequest("responsibleUserId does not resolve to a known user")
 		}
-		return nil, nil, err
+		return nil, err
 	}
 	if !u.IsActive {
-		return nil, nil, apperror.BadRequest("responsibleUserId is not an active user")
+		return nil, apperror.BadRequest("responsibleUserId is not an active user")
 	}
 
 	lookup, err := s.mapLookup(ctx, ids)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	oks, results, allOK := validateBulkAssignRequest(in, p, lookup, s.cfg.MaxAssets)
-
-	validOnly := in.ValidOnly != nil && *in.ValidOnly
-	if !allOK && (!validOnly || hasGlobalFailure(results)) {
-		return nil, bulkAssignResponse(nil, results), nil
-	}
-
-	// Enqueue only the rows that need a write; pre-count already-assigned rows
-	// as skipped. In-batch re-read handles the TOCTOU case (a non-no-op row
-	// that becomes a no-op by execution time is skipped there too).
-	processIDs := make([]bson.ObjectID, 0, len(oks))
-	skipped := 0
-	for _, v := range oks {
-		if v.noOp {
-			skipped++
-			continue
-		}
-		processIDs = append(processIDs, v.asset.ID)
+	toUpdate, skipped, err := planBulkAssign(in, p, lookup, s.cfg.MaxAssets)
+	if err != nil {
+		return nil, err
 	}
 
 	attachmentIDs := derefAttachmentIDs(in.AttachmentIDs)
-	// Validate attachments only when we'll actually link them (mirrors the
-	// sync path: an all-no-op batch must not consume/orphan attachments).
-	if len(processIDs) > 0 {
+	if len(toUpdate) > 0 {
 		if err := s.asset.validateAttachments(ctx, attachmentIDs, performedBy); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	} else {
 		attachmentIDs = nil
 	}
 
-	rowErrs := rowErrorsFrom(results)
 	params := repository.BulkJobParams{ResponsibleUserID: &in.ResponsibleUserID, Notes: in.Notes}
-	job := s.newJobDoc(models.BulkJobTypeAssign, performedBy, processIDs, attachmentIDs, validOnly, params, len(ids), len(rowErrs), skipped, rowErrs)
+	job := s.newJobDoc(models.BulkJobTypeAssign, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return &job.BulkJob, nil, nil
+	return &job.BulkJob, nil
 }
 
 func (s *BulkJobService) EnqueueCondition(ctx context.Context, performedBy bson.ObjectID, p Principal, in models.BulkConditionUpdate) (*models.BulkJob, error) {
