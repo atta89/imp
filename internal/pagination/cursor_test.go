@@ -1,6 +1,7 @@
 package pagination
 
 import (
+	"encoding/base64"
 	"testing"
 	"time"
 
@@ -41,7 +42,17 @@ func TestDecodeEmptyIsFirstPage(t *testing.T) {
 }
 
 func TestDecodeMalformedIsBadRequest(t *testing.T) {
-	for _, raw := range []string{"not-base64!!!", "", "x"} {
+	for _, raw := range []string{
+		"not-base64!!!",
+		"",
+		"x",
+		// Valid base64url that decodes to a payload missing the "|" separator.
+		base64.RawURLEncoding.EncodeToString([]byte("abc")),
+		// Valid base64url that decodes to a non-numeric timestamp.
+		base64.RawURLEncoding.EncodeToString([]byte("notint|64d2f8a1c3b2a10012345678")),
+		// Valid base64url that decodes to a bad hex ObjectID.
+		base64.RawURLEncoding.EncodeToString([]byte("123|xyz")),
+	} {
 		if raw == "" {
 			continue // empty is the first-page sentinel, covered above
 		}

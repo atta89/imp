@@ -69,7 +69,12 @@ func TestRepairFindPageIT_FilterAndCoverage(t *testing.T) {
 	if len(got) != nOpen {
 		t.Fatalf("got %d open/in_progress repairs, want %d (closed leaked?)", len(got), nOpen)
 	}
+	seen := map[bson.ObjectID]struct{}{}
 	for _, id := range got {
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate repair id %s across pages", id.Hex())
+		}
+		seen[id] = struct{}{}
 		if _, ok := want[id]; !ok {
 			t.Fatalf("unexpected repair id %s", id.Hex())
 		}
