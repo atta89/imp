@@ -147,6 +147,16 @@ func (e *itEnv) seedAsset(home, current bson.ObjectID, status models.AssetStatus
 	return id
 }
 
+// deleteAsset hard-deletes an asset document, simulating "deleted since
+// planning" for TOCTOU tests: the row is present at enqueue time (included in
+// job.AssetIDs) but gone by the time the worker's applyRow reloads it.
+func (e *itEnv) deleteAsset(id bson.ObjectID) {
+	e.t.Helper()
+	if err := e.assets.Delete(context.Background(), id); err != nil {
+		e.t.Fatalf("delete asset: %v", err)
+	}
+}
+
 // adminPrincipal authorizes everything, keeping tests focused on job mechanics.
 func adminPrincipal() Principal { return Principal{IsAdmin: true, UserID: bson.NewObjectID()} }
 
@@ -233,6 +243,52 @@ func TestBulkJobIT_TransferEndToEnd(t *testing.T) {
 	// Exactly one transfer digest to the one home-venue manager.
 	if got := e.outboxCount(bson.M{"type": string(models.Transfer)}); got != 1 {
 		t.Fatalf("transfer outbox rows=%d want exactly 1 (multi-batch digest-once)", got)
+	}
+}
+
+// TestBulkJobIT_TransferSameVenueAndDeletedAreSkips covers the TOCTOU paths in
+// applyRow: planBulkTransfer already pre-counts same-venue/not-found rows as
+// skips at enqueue time, so to exercise the worker's own skip handling both
+// rows must be valid AT ENQUEUE and only become a no-op / disappear before the
+// worker executes them — exactly like the status TOCTOU test above.
+func TestBulkJobIT_TransferSameVenueAndDeletedAreSkips(t *testing.T) {
+	e := setupIT(t, BulkJobConfig{BatchSize: 2, MaxAttempts: 3, ErrorCap: 100, Lease: time.Minute})
+	home := e.seedVenue(true)
+	dest := e.seedVenue(true)
+
+	moved := e.seedAsset(home, home, models.InUse, models.Good, nil)   // valid transfer at enqueue
+	deleted := e.seedAsset(home, home, models.InUse, models.Good, nil) // valid at enqueue, gone at execution
+
+	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+		models.BulkTransferRequest{AssetIDs: []bson.ObjectID{moved, deleted}, ToVenueID: dest})
+	if err != nil || job == nil {
+		t.Fatalf("enqueue: job=%v err=%v", job, err)
+	}
+	if job.Counts.Skipped != 0 {
+		t.Fatalf("skipped at enqueue=%d want 0 (both destined for a different venue and present)", job.Counts.Skipped)
+	}
+
+	// TOCTOU, after enqueue but before the worker runs: `moved` is mutated to
+	// already be at dest (same-venue no-op at execution time); `deleted` is
+	// hard-deleted (not-found at execution time).
+	if _, err := e.assets.Update(context.Background(), moved, bson.M{"currentVenueId": dest}); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+	e.deleteAsset(deleted)
+
+	doc := e.runToCompletion(job)
+	if doc.Counts.Failed != 0 {
+		t.Fatalf("failed=%d want 0 (both should be skips)", doc.Counts.Failed)
+	}
+	if doc.Counts.Skipped != 2 {
+		t.Fatalf("skipped=%d want 2", doc.Counts.Skipped)
+	}
+	if e.movementCount(moved) != 0 {
+		t.Fatalf("same-venue no-op wrote a movement (must not)")
+	}
+	// No notifications: nothing actually moved.
+	if e.outboxCount(bson.M{"type": string(models.Transfer)}) != 0 {
+		t.Fatal("expected zero transfer digests (nothing moved)")
 	}
 }
 

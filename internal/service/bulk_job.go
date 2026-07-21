@@ -699,24 +699,45 @@ func (s *BulkJobService) applyRow(ctx context.Context, job *repository.BulkJobDo
 	switch job.Type {
 	case models.BulkJobTypeTransfer:
 		if a == nil {
-			return outcomeErrored, rowErr(id, "not_found", "asset not found at execution"), nil
+			return outcomeSkipped, nil, nil // deleted since planning
+		}
+		if a.CurrentVenueID == *job.Params.ToVenueID {
+			return outcomeSkipped, nil, nil // same-venue no-op
 		}
 		_, err := s.asset.applyTransfer(ctx, a, performedBy, models.TransferAssetRequest{
 			ToVenueID:          *job.Params.ToVenueID,
 			ExpectedReturnDate: job.Params.ExpectedReturnDate,
 			Notes:              job.Params.Notes,
 		}, attachmentIDs)
-		return s.classifyApplyErr(id, err, "same_venue")
+		if err != nil {
+			if isKind(err, apperror.KindConflict) {
+				return outcomeSkipped, nil, nil // TOCTOU no-op
+			}
+			return outcomeErrored, nil, err // infra
+		}
+		return outcomeSucceeded, nil, nil
 
 	case models.BulkJobTypeStatus:
 		if a == nil {
-			return outcomeErrored, rowErr(id, "not_found", "asset not found at execution"), nil
+			return outcomeSkipped, nil, nil
+		}
+		if a.Status == *job.Params.Status {
+			return outcomeSkipped, nil, nil // no-op
+		}
+		if !IsAllowedTransition(a.Status, *job.Params.Status) {
+			return outcomeErrored, rowErr(id, "invalid_transition", "status transition not allowed"), nil
 		}
 		_, err := s.asset.applyStatusChange(ctx, a, performedBy, models.StatusChangeRequest{
 			Status: *job.Params.Status,
 			Reason: job.Params.Reason,
 		}, attachmentIDs)
-		return s.classifyApplyErr(id, err, "invalid_transition")
+		if err != nil {
+			if isKind(err, apperror.KindConflict) {
+				return outcomeSkipped, nil, nil
+			}
+			return outcomeErrored, nil, err
+		}
+		return outcomeSucceeded, nil, nil
 
 	case models.BulkJobTypeAssign:
 		if a == nil {
