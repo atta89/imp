@@ -10,6 +10,7 @@ type Envelope struct {
 
 type Meta struct {
 	Pagination *Pagination `json:"pagination,omitempty"`
+	Cursor     *CursorPage `json:"cursor,omitempty"`
 }
 
 type Pagination struct {
@@ -17,6 +18,15 @@ type Pagination struct {
 	Limit      int   `json:"limit"`
 	Total      int64 `json:"total"`
 	TotalPages int   `json:"totalPages"`
+}
+
+// CursorPage is the keyset-pagination metadata for cursor-based list
+// endpoints. Unlike Pagination it carries no total/page — the client walks
+// forward by echoing NextCursor until HasMore is false.
+type CursorPage struct {
+	Limit      int    `json:"limit"`
+	HasMore    bool   `json:"hasMore"`
+	NextCursor string `json:"nextCursor,omitempty"`
 }
 
 // ErrorBody is the standard error response wrapper.
@@ -46,6 +56,11 @@ func Accepted(c *fiber.Ctx, data any) error {
 
 func Paginated(c *fiber.Ctx, data any, p Pagination) error {
 	return c.Status(fiber.StatusOK).JSON(Envelope{Data: data, Meta: &Meta{Pagination: &p}})
+}
+
+// PaginatedCursor wraps data with keyset-pagination metadata under meta.cursor.
+func PaginatedCursor(c *fiber.Ctx, data any, p CursorPage) error {
+	return c.Status(fiber.StatusOK).JSON(Envelope{Data: data, Meta: &Meta{Cursor: &p}})
 }
 
 func NoContent(c *fiber.Ctx) error {
