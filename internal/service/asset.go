@@ -403,14 +403,7 @@ func (s *AssetService) applyStatusChange(ctx context.Context, a *models.Asset, p
 		return nil, err
 	}
 	from, to := a.Status, in.Status
-	m := &models.Movement{
-		AssetID:     a.ID,
-		Type:        models.MovementTypeStatusChange,
-		FromStatus:  &from,
-		ToStatus:    &to,
-		Reason:      in.Reason,
-		PerformedBy: performedBy,
-	}
+	m := buildStatusMovement(a, from, to, performedBy, in)
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
@@ -473,14 +466,7 @@ func (s *AssetService) applyConditionUpdate(ctx context.Context, a *models.Asset
 	if err != nil {
 		return nil, err
 	}
-	m := &models.Movement{
-		AssetID:       a.ID,
-		Type:          models.MovementTypeConditionChange,
-		FromCondition: &from,
-		ToCondition:   &to,
-		Notes:         in.Notes,
-		PerformedBy:   performedBy,
-	}
+	m := buildConditionMovement(a, from, to, performedBy, in)
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
@@ -554,15 +540,7 @@ func (s *AssetService) applyTransfer(ctx context.Context, a *models.Asset, perfo
 		return nil, err
 	}
 	from, to := a.CurrentVenueID, in.ToVenueID
-	m := &models.Movement{
-		AssetID:            a.ID,
-		Type:               models.MovementTypeTransfer,
-		FromVenueID:        &from,
-		ToVenueID:          &to,
-		ExpectedReturnDate: expectedReturn,
-		Notes:              in.Notes,
-		PerformedBy:        performedBy,
-	}
+	m := buildTransferMovement(a, from, to, expectedReturn, performedBy, in)
 	if len(attachmentIDs) > 0 {
 		m.AttachmentIDs = &attachmentIDs
 	}
@@ -657,6 +635,49 @@ func buildCustodyMovement(a *models.Asset, performedBy, newUserID bson.ObjectID,
 		ToUserID:    &to,
 		Notes:       notes,
 		PerformedBy: performedBy,
+	}
+}
+
+// buildStatusMovement mirrors buildCustodyMovement: pure Movement construction
+// for a status change, so all apply* helpers build movements identically.
+func buildStatusMovement(a *models.Asset, from, to models.AssetStatus, performedBy bson.ObjectID, in models.StatusChangeRequest) *models.Movement {
+	return &models.Movement{
+		AssetID:     a.ID,
+		Type:        models.MovementTypeStatusChange,
+		FromStatus:  &from,
+		ToStatus:    &to,
+		Reason:      in.Reason,
+		PerformedBy: performedBy,
+	}
+}
+
+// buildConditionMovement mirrors buildCustodyMovement: pure Movement
+// construction for a condition change, so all apply* helpers build movements
+// identically.
+func buildConditionMovement(a *models.Asset, from, to models.AssetCondition, performedBy bson.ObjectID, in models.ConditionUpdate) *models.Movement {
+	return &models.Movement{
+		AssetID:       a.ID,
+		Type:          models.MovementTypeConditionChange,
+		FromCondition: &from,
+		ToCondition:   &to,
+		Notes:         in.Notes,
+		PerformedBy:   performedBy,
+	}
+}
+
+// buildTransferMovement mirrors buildCustodyMovement: pure Movement
+// construction for a venue transfer, so all apply* helpers build movements
+// identically. expectedReturn is passed separately since it's derived by the
+// caller (nil on return-home, or the request value on a temporary loan).
+func buildTransferMovement(a *models.Asset, from, to bson.ObjectID, expectedReturn *time.Time, performedBy bson.ObjectID, in models.TransferAssetRequest) *models.Movement {
+	return &models.Movement{
+		AssetID:            a.ID,
+		Type:               models.MovementTypeTransfer,
+		FromVenueID:        &from,
+		ToVenueID:          &to,
+		ExpectedReturnDate: expectedReturn,
+		Notes:              in.Notes,
+		PerformedBy:        performedBy,
 	}
 }
 
