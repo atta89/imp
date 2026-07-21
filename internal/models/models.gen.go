@@ -576,6 +576,15 @@ type CreateVenueRequest struct {
 	Type     string  `json:"type"`
 }
 
+// CursorPagination defines model for CursorPagination.
+type CursorPagination struct {
+	HasMore bool `json:"hasMore"`
+	Limit   int  `json:"limit"`
+
+	// NextCursor Opaque token; pass back as the `cursor` query param to fetch the next page. Present only when hasMore is true.
+	NextCursor *string `json:"nextCursor,omitempty"`
+}
+
 // CustomFieldType defines model for CustomFieldType.
 type CustomFieldType string
 
@@ -709,7 +718,8 @@ type LoginRequest struct {
 
 // Meta defines model for Meta.
 type Meta struct {
-	Pagination *Pagination `json:"pagination,omitempty"`
+	Cursor     *CursorPagination `json:"cursor,omitempty"`
+	Pagination *Pagination       `json:"pagination,omitempty"`
 }
 
 // Movement defines model for Movement.
@@ -1100,10 +1110,34 @@ type GetRepairsParams struct {
 	AssetId *string       `form:"assetId,omitempty" json:"assetId,omitempty"`
 }
 
+// GetReportsAssetsAwayParams defines parameters for GetReportsAssetsAway.
+type GetReportsAssetsAwayParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset cursor from a previous response's meta.cursor.nextCursor. Omit for the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
+// GetReportsAssetsOverdueParams defines parameters for GetReportsAssetsOverdue.
+type GetReportsAssetsOverdueParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset cursor from a previous response's meta.cursor.nextCursor. Omit for the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+}
+
 // GetReportsByDepartmentParams defines parameters for GetReportsByDepartment.
 type GetReportsByDepartmentParams struct {
 	// Venue Optional venue scope; when omitted, admins get all venues.
 	Venue *string `form:"venue,omitempty" json:"venue,omitempty"`
+}
+
+// GetReportsInRepairParams defines parameters for GetReportsInRepair.
+type GetReportsInRepairParams struct {
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+
+	// Cursor Opaque keyset cursor from a previous response's meta.cursor.nextCursor. Omit for the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
 // GetUsersParams defines parameters for GetUsers.
