@@ -107,28 +107,6 @@ func TestTerminalStatus(t *testing.T) {
 	}
 }
 
-func TestRowErrorsFromAndGlobalFailure(t *testing.T) {
-	a, b := bson.NewObjectID(), bson.NewObjectID()
-	nf, forb := "not_found", "forbidden"
-	results := []models.BulkActionResult{
-		{AssetID: a, Ok: true},
-		{AssetID: b, Ok: false, Error: &nf},
-		{AssetID: bson.NilObjectID, Ok: false, Error: &forb}, // synthetic global row
-	}
-
-	if !hasGlobalFailure(results) {
-		t.Fatal("expected a global (NilObjectID) failure to be detected")
-	}
-
-	errs := rowErrorsFrom(results)
-	if len(errs) != 1 {
-		t.Fatalf("expected exactly 1 row error (global row excluded), got %d", len(errs))
-	}
-	if errs[0].AssetID != b || errs[0].Code != "not_found" {
-		t.Fatalf("unexpected row error: %+v", errs[0])
-	}
-}
-
 func TestNewJobDocChunkingMath(t *testing.T) {
 	s := svc(BulkJobConfig{BatchSize: 100, ErrorCap: 1000})
 	ids := make([]bson.ObjectID, 250)

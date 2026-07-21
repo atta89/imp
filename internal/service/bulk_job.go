@@ -112,35 +112,6 @@ func (s *BulkJobService) mapLookup(ctx context.Context, ids []bson.ObjectID) (fu
 	}, nil
 }
 
-// hasGlobalFailure reports whether the diagnostics contain a whole-batch
-// (synthetic, NilObjectID) failure row — e.g. dest_venue_forbidden. Such a
-// failure can never be salvaged by validOnly.
-func hasGlobalFailure(results []models.BulkActionResult) bool {
-	for _, r := range results {
-		if !r.Ok && r.AssetID == bson.NilObjectID {
-			return true
-		}
-	}
-	return false
-}
-
-// rowErrorsFrom converts failed per-row diagnostics (excluding synthetic global
-// rows) into job row errors.
-func rowErrorsFrom(results []models.BulkActionResult) []models.BulkJobRowError {
-	out := make([]models.BulkJobRowError, 0)
-	for _, r := range results {
-		if r.Ok || r.AssetID == bson.NilObjectID {
-			continue
-		}
-		code := ""
-		if r.Error != nil {
-			code = *r.Error
-		}
-		out = append(out, models.BulkJobRowError{AssetID: r.AssetID, Code: code, Message: code})
-	}
-	return out
-}
-
 // newJobDoc assembles a queued BulkJobDoc with capped seed errors.
 func (s *BulkJobService) newJobDoc(
 	typ models.BulkJobType,
