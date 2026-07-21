@@ -356,7 +356,16 @@ func (s *AssetService) BulkUpdateCondition(ctx context.Context, performedBy bson
 		return nil, err
 	}
 
-	out := &models.BulkConditionResult{Skipped: skipped}
+	// Throwaway glue: classifyBulkCondition now returns the shared []bulkSkip;
+	// this method's result type still speaks models.BulkConditionSkipped. This
+	// method is dead (unrouted) and removed in a later task — convert here
+	// rather than widen the public result type for a call site nothing hits.
+	modelSkipped := make([]models.BulkConditionSkipped, 0, len(skipped))
+	for _, sk := range skipped {
+		modelSkipped = append(modelSkipped, models.BulkConditionSkipped{ID: sk.ID, Reason: sk.Reason})
+	}
+
+	out := &models.BulkConditionResult{Skipped: modelSkipped}
 	single := models.ConditionUpdate{Condition: in.Condition, Notes: in.Notes}
 	for _, id := range toUpdate {
 		if _, err := s.updateConditionForBulk(ctx, id, performedBy, single, attachmentIDs); err != nil {
@@ -390,23 +399,112 @@ func classifyBulkCondition(
 	p Principal,
 	lookup func(bson.ObjectID) (*models.Asset, error),
 	maxBulk int,
-) ([]bson.ObjectID, []models.BulkConditionSkipped, error) {
+) ([]bson.ObjectID, []bulkSkip, error) {
 	if !validCondition(in.Condition) {
 		return nil, nil, apperror.BadRequest("invalid condition")
 	}
-	n := len(in.AssetIDs)
+	if err := checkBatchSize(len(in.AssetIDs), maxBulk); err != nil {
+		return nil, nil, err
+	}
+	return partitionBulk(in.AssetIDs, p, lookup, func(a *models.Asset) bool {
+		return a.Condition == in.Condition // unchanged
+	})
+}
+
+// bulkSkip is a per-asset skip recorded during planning: the row is counted
+// (not written, not errored). Reason ∈ {not_found, forbidden, unchanged}.
+// Package-internal — the live contract surfaces only the COUNT (job progress),
+// never the list.
+type bulkSkip struct {
+	ID     bson.ObjectID
+	Reason string
+}
+
+// planBulkTransfer partitions a transfer batch into (toUpdate, skipped) or
+// returns a global 400. Mirrors classifyBulkCondition: request-level problems
+// (empty/over-cap, dest venue forbidden/not-found) are 400s; per-asset problems
+// (not_found, forbidden, same-venue no-op) are skips.
+func planBulkTransfer(
+	in models.BulkTransferRequest,
+	p Principal,
+	lookup func(bson.ObjectID) (*models.Asset, error),
+	destExists bool,
+	maxBulk int,
+) ([]bson.ObjectID, []bulkSkip, error) {
+	if err := checkBatchSize(len(in.AssetIDs), maxBulk); err != nil {
+		return nil, nil, err
+	}
+	if !p.canAccessVenue(in.ToVenueID) {
+		return nil, nil, apperror.BadRequest("toVenueId is outside your venue scope")
+	}
+	if !destExists {
+		return nil, nil, apperror.BadRequest("toVenueId does not resolve to a known venue")
+	}
+	return partitionBulk(in.AssetIDs, p, lookup, func(a *models.Asset) (skip bool) {
+		return a.CurrentVenueID == in.ToVenueID // same-venue transfer is a no-op
+	})
+}
+
+// planBulkStatus partitions a status batch. A same-status row is an unchanged
+// skip; a disallowed (non-no-op) transition is NOT rejected here — it flows to
+// applyRow as an invalid_transition row error, exactly as an illegal condition
+// change does for the reference endpoint.
+func planBulkStatus(
+	in models.BulkStatusRequest,
+	p Principal,
+	lookup func(bson.ObjectID) (*models.Asset, error),
+	maxBulk int,
+) ([]bson.ObjectID, []bulkSkip, error) {
+	if err := checkBatchSize(len(in.AssetIDs), maxBulk); err != nil {
+		return nil, nil, err
+	}
+	return partitionBulk(in.AssetIDs, p, lookup, func(a *models.Asset) bool {
+		return a.Status == in.Status // no-op
+	})
+}
+
+// planBulkAssign partitions an assign batch. A row already assigned to the
+// target user is an unchanged skip. The target user's existence/active check is
+// a request-level 400 handled by the caller (EnqueueAssign), not here.
+func planBulkAssign(
+	in models.BulkAssignRequest,
+	p Principal,
+	lookup func(bson.ObjectID) (*models.Asset, error),
+	maxBulk int,
+) ([]bson.ObjectID, []bulkSkip, error) {
+	if err := checkBatchSize(len(in.AssetIDs), maxBulk); err != nil {
+		return nil, nil, err
+	}
+	return partitionBulk(in.AssetIDs, p, lookup, func(a *models.Asset) bool {
+		return a.ResponsibleUserID != nil && *a.ResponsibleUserID == in.ResponsibleUserID // no-op
+	})
+}
+
+// checkBatchSize is the shared request-level batch guard.
+func checkBatchSize(n, maxBulk int) error {
 	if n == 0 {
-		return nil, nil, apperror.BadRequest("assetIds is required")
+		return apperror.BadRequest("assetIds is required")
 	}
 	if n > maxBulk {
-		return nil, nil, apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", maxBulk))
+		return apperror.BadRequest(fmt.Sprintf("batch exceeds MaxBulkAssets (%d)", maxBulk))
 	}
+	return nil
+}
 
-	seen := make(map[bson.ObjectID]struct{}, n)
-	toUpdate := make([]bson.ObjectID, 0, n)
-	skipped := make([]models.BulkConditionSkipped, 0)
-
-	for _, id := range in.AssetIDs {
+// partitionBulk is the shared per-asset planning loop: dedupe, look up, apply
+// RBAC (forbidden skip) and a caller-supplied no-op predicate (unchanged skip),
+// else queue for update. A lookup NotFound (or nil asset) is a not_found skip;
+// any other lookup error is a global error.
+func partitionBulk(
+	ids []bson.ObjectID,
+	p Principal,
+	lookup func(bson.ObjectID) (*models.Asset, error),
+	isNoOp func(*models.Asset) bool,
+) ([]bson.ObjectID, []bulkSkip, error) {
+	seen := make(map[bson.ObjectID]struct{}, len(ids))
+	toUpdate := make([]bson.ObjectID, 0, len(ids))
+	skipped := make([]bulkSkip, 0)
+	for _, id := range ids {
 		if _, dup := seen[id]; dup {
 			continue
 		}
@@ -415,17 +513,21 @@ func classifyBulkCondition(
 		a, err := lookup(id)
 		if err != nil {
 			if isKind(err, apperror.KindNotFound) {
-				skipped = append(skipped, models.BulkConditionSkipped{ID: id, Reason: "not_found"})
+				skipped = append(skipped, bulkSkip{ID: id, Reason: "not_found"})
 				continue
 			}
 			return nil, nil, err
 		}
-		if !p.canAccessVenue(a.HomeVenueID) && !p.canAccessVenue(a.CurrentVenueID) {
-			skipped = append(skipped, models.BulkConditionSkipped{ID: id, Reason: "forbidden"})
+		if a == nil {
+			skipped = append(skipped, bulkSkip{ID: id, Reason: "not_found"})
 			continue
 		}
-		if a.Condition == in.Condition {
-			skipped = append(skipped, models.BulkConditionSkipped{ID: id, Reason: "unchanged"})
+		if !p.canAccessVenue(a.HomeVenueID) && !p.canAccessVenue(a.CurrentVenueID) {
+			skipped = append(skipped, bulkSkip{ID: id, Reason: "forbidden"})
+			continue
+		}
+		if isNoOp(a) {
+			skipped = append(skipped, bulkSkip{ID: id, Reason: "unchanged"})
 			continue
 		}
 		toUpdate = append(toUpdate, id)

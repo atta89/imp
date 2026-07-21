@@ -174,7 +174,7 @@ func storeLookup(store map[bson.ObjectID]*models.Asset) func(bson.ObjectID) (*mo
 // skippedByID rebuilds a {id: reason} map so tests can assert without
 // depending on the traversal order of in.AssetIDs (which the planner does
 // preserve, but tests read more clearly when keyed by id).
-func skippedByID(sk []models.BulkConditionSkipped) map[bson.ObjectID]string {
+func skippedByID(sk []bulkSkip) map[bson.ObjectID]string {
 	m := make(map[bson.ObjectID]string, len(sk))
 	for _, s := range sk {
 		m[s.ID] = s.Reason
@@ -560,5 +560,118 @@ func TestDedupeTransferNotifyTargets_OnePerHomeVenue(t *testing.T) {
 	}
 	if byVenue[hv1] != 2 || byVenue[hv2] != 1 {
 		t.Errorf("group sizes wrong: %v", byVenue)
+	}
+}
+
+func TestPlanBulkTransfer_Partitions(t *testing.T) {
+	venueA := bson.NewObjectID() // in scope
+	venueB := bson.NewObjectID() // dest, in scope
+	inScope := Principal{VenueIDs: map[string]struct{}{venueA.Hex(): {}, venueB.Hex(): {}}}
+
+	moveable := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venueA, CurrentVenueID: venueA}
+	sameVenue := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venueB, CurrentVenueID: venueB}
+	outOfScope := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: bson.NewObjectID(), CurrentVenueID: bson.NewObjectID()}
+	missingID := bson.NewObjectID()
+
+	byID := map[bson.ObjectID]*models.Asset{moveable.ID: moveable, sameVenue.ID: sameVenue, outOfScope.ID: outOfScope}
+	lookup := func(id bson.ObjectID) (*models.Asset, error) {
+		if a, ok := byID[id]; ok {
+			return a, nil
+		}
+		return nil, apperror.NotFound("asset not found")
+	}
+
+	in := models.BulkTransferRequest{
+		AssetIDs:  []bson.ObjectID{moveable.ID, sameVenue.ID, outOfScope.ID, missingID, moveable.ID},
+		ToVenueID: venueB,
+	}
+	toUpdate, skipped, err := planBulkTransfer(in, inScope, lookup, true, 5000)
+	if err != nil {
+		t.Fatalf("unexpected global error: %v", err)
+	}
+	if len(toUpdate) != 1 || toUpdate[0] != moveable.ID {
+		t.Fatalf("toUpdate = %v, want [%s]", toUpdate, moveable.ID.Hex())
+	}
+	got := map[string]string{}
+	for _, s := range skipped {
+		got[s.ID.Hex()] = s.Reason
+	}
+	if got[sameVenue.ID.Hex()] != "unchanged" {
+		t.Errorf("sameVenue reason = %q, want unchanged", got[sameVenue.ID.Hex()])
+	}
+	if got[outOfScope.ID.Hex()] != "forbidden" {
+		t.Errorf("outOfScope reason = %q, want forbidden", got[outOfScope.ID.Hex()])
+	}
+	if got[missingID.Hex()] != "not_found" {
+		t.Errorf("missing reason = %q, want not_found", got[missingID.Hex()])
+	}
+	if _, dup := got[moveable.ID.Hex()]; dup {
+		t.Errorf("duplicate moveable id should not be skipped, just deduped")
+	}
+}
+
+func TestPlanBulkTransfer_GlobalErrors(t *testing.T) {
+	p := Principal{IsAdmin: true}
+	lookup := func(id bson.ObjectID) (*models.Asset, error) { return nil, apperror.NotFound("x") }
+
+	if _, _, err := planBulkTransfer(models.BulkTransferRequest{AssetIDs: nil, ToVenueID: bson.NewObjectID()}, p, lookup, true, 5000); !isKind(err, apperror.KindBadRequest) {
+		t.Errorf("empty batch: want BadRequest, got %v", err)
+	}
+	ids := make([]bson.ObjectID, 3)
+	if _, _, err := planBulkTransfer(models.BulkTransferRequest{AssetIDs: ids, ToVenueID: bson.NewObjectID()}, p, lookup, true, 2); !isKind(err, apperror.KindBadRequest) {
+		t.Errorf("over cap: want BadRequest, got %v", err)
+	}
+	if _, _, err := planBulkTransfer(models.BulkTransferRequest{AssetIDs: ids, ToVenueID: bson.NewObjectID()}, p, lookup, false, 5000); !isKind(err, apperror.KindBadRequest) {
+		t.Errorf("dest not found: want BadRequest, got %v", err)
+	}
+	nonAdmin := Principal{VenueIDs: map[string]struct{}{}}
+	if _, _, err := planBulkTransfer(models.BulkTransferRequest{AssetIDs: ids, ToVenueID: bson.NewObjectID()}, nonAdmin, lookup, true, 5000); !isKind(err, apperror.KindBadRequest) {
+		t.Errorf("dest forbidden: want BadRequest, got %v", err)
+	}
+}
+
+func TestPlanBulkStatus_NoOpAndForbidden(t *testing.T) {
+	venue := bson.NewObjectID()
+	p := Principal{VenueIDs: map[string]struct{}{venue.Hex(): {}}}
+	same := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue, Status: models.Available}
+	diff := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue, Status: models.InUse}
+	byID := map[bson.ObjectID]*models.Asset{same.ID: same, diff.ID: diff}
+	lookup := func(id bson.ObjectID) (*models.Asset, error) {
+		if a, ok := byID[id]; ok {
+			return a, nil
+		}
+		return nil, apperror.NotFound("nf")
+	}
+	in := models.BulkStatusRequest{AssetIDs: []bson.ObjectID{same.ID, diff.ID}, Status: models.Available}
+	toUpdate, skipped, err := planBulkStatus(in, p, lookup, 5000)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(toUpdate) != 1 || toUpdate[0] != diff.ID {
+		t.Fatalf("toUpdate = %v, want [%s]", toUpdate, diff.ID.Hex())
+	}
+	if len(skipped) != 1 || skipped[0].ID != same.ID || skipped[0].Reason != "unchanged" {
+		t.Fatalf("skipped = %+v, want [{%s unchanged}]", skipped, same.ID.Hex())
+	}
+}
+
+func TestPlanBulkAssign_NoOp(t *testing.T) {
+	venue := bson.NewObjectID()
+	target := bson.NewObjectID()
+	p := Principal{VenueIDs: map[string]struct{}{venue.Hex(): {}}}
+	already := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue, ResponsibleUserID: &target}
+	needs := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue}
+	byID := map[bson.ObjectID]*models.Asset{already.ID: already, needs.ID: needs}
+	lookup := func(id bson.ObjectID) (*models.Asset, error) { return byID[id], nil }
+	in := models.BulkAssignRequest{AssetIDs: []bson.ObjectID{already.ID, needs.ID}, ResponsibleUserID: target}
+	toUpdate, skipped, err := planBulkAssign(in, p, lookup, 5000)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(toUpdate) != 1 || toUpdate[0] != needs.ID {
+		t.Fatalf("toUpdate = %v, want [%s]", toUpdate, needs.ID.Hex())
+	}
+	if len(skipped) != 1 || skipped[0].Reason != "unchanged" {
+		t.Fatalf("skipped = %+v, want one unchanged", skipped)
 	}
 }
