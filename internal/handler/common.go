@@ -7,6 +7,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"imp/internal/apperror"
+	"imp/internal/pagination"
 )
 
 const (
@@ -40,6 +41,24 @@ func ParsePagination(c *fiber.Ctx) (page, limit int) {
 		limit = v
 	}
 	return page, limit
+}
+
+// ParseKeyset reads the keyset-pagination query params: `limit` (default
+// defaultLimit, clamped to maxLimit) and `cursor` (opaque token, decoded).
+// A malformed cursor yields a typed BadRequest.
+func ParseKeyset(c *fiber.Ctx) (*pagination.Cursor, int, error) {
+	limit := defaultLimit
+	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 {
+		if v > maxLimit {
+			v = maxLimit
+		}
+		limit = v
+	}
+	cur, err := pagination.Decode(c.Query("cursor"))
+	if err != nil {
+		return nil, 0, err
+	}
+	return cur, limit, nil
 }
 
 // TotalPages returns ceil(total/limit).
