@@ -11,6 +11,7 @@ import (
 
 	"imp/internal/apperror"
 	"imp/internal/models"
+	"imp/internal/pagination"
 )
 
 // awayFromHomeFilter returns the Mongo expression that selects assets whose
@@ -510,6 +511,54 @@ func (r *AssetRepository) FindAwayFromHome(ctx context.Context) ([]models.Asset,
 // FindOverdue returns every asset with isOverdue=true.
 func (r *AssetRepository) FindOverdue(ctx context.Context) ([]models.Asset, error) {
 	return r.find(ctx, bson.M{"isOverdue": true})
+}
+
+// findPage returns up to `limit` assets matching filter in (createdAt desc,
+// _id desc) order — the GET /assets / ids-export keyset order — positioned
+// strictly after `after` (nil = newest first / first page). It over-fetches by
+// one row: if the surplus exists, hasMore is true and it is trimmed. The
+// caller's filter is never mutated; the keyset bound is combined via a fresh
+// $and wrapper. Backed by the {createdAt:-1,_id:-1} asset index.
+func (r *AssetRepository) findPage(ctx context.Context, filter bson.M, after *pagination.Cursor, limit int) ([]models.Asset, bool, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	q := filter
+	if after != nil {
+		q = bson.M{"$and": bson.A{filter, bson.M{"$or": bson.A{
+			bson.M{"createdAt": bson.M{"$lt": after.CreatedAt}},
+			bson.M{"createdAt": after.CreatedAt, "_id": bson.M{"$lt": after.ID}},
+		}}}}
+	}
+	cur, err := r.coll.Find(ctx, q,
+		options.Find().
+			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
+			SetLimit(int64(limit + 1)),
+	)
+	if err != nil {
+		return nil, false, apperror.Internal("find assets page", err)
+	}
+	defer cur.Close(ctx)
+	var out []models.Asset
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, false, apperror.Internal("decode assets", err)
+	}
+	hasMore := false
+	if len(out) > limit {
+		hasMore = true
+		out = out[:limit]
+	}
+	return out, hasMore, nil
+}
+
+// FindAwayFromHomePage is the keyset-paginated form of FindAwayFromHome.
+func (r *AssetRepository) FindAwayFromHomePage(ctx context.Context, after *pagination.Cursor, limit int) ([]models.Asset, bool, error) {
+	return r.findPage(ctx, awayFromHomeFilter(), after, limit)
+}
+
+// FindOverduePage is the keyset-paginated form of FindOverdue.
+func (r *AssetRepository) FindOverduePage(ctx context.Context, after *pagination.Cursor, limit int) ([]models.Asset, bool, error) {
+	return r.findPage(ctx, bson.M{"isOverdue": true}, after, limit)
 }
 
 // FindOverdueWithCustodian returns the same set, restricted to assets that
