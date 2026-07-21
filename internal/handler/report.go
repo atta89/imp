@@ -6,6 +6,7 @@ import (
 
 	"imp/internal/apperror"
 	"imp/internal/middleware"
+	"imp/internal/pagination"
 	"imp/internal/service"
 	"imp/pkg/response"
 )
@@ -27,27 +28,49 @@ func (h *ReportHandler) InventoryByVenue(c *fiber.Ctx) error {
 }
 
 func (h *ReportHandler) AssetsAway(c *fiber.Ctx) error {
-	rows, err := h.reports.AssetsAway(c.Context())
+	after, limit, err := ParseKeyset(c)
 	if err != nil {
 		return err
 	}
-	return response.OK(c, rows)
+	rows, next, hasMore, err := h.reports.AssetsAway(c.Context(), after, limit)
+	if err != nil {
+		return err
+	}
+	return respondCursor(c, rows, next, hasMore, limit)
 }
 
 func (h *ReportHandler) AssetsOverdue(c *fiber.Ctx) error {
-	rows, err := h.reports.AssetsOverdue(c.Context())
+	after, limit, err := ParseKeyset(c)
 	if err != nil {
 		return err
 	}
-	return response.OK(c, rows)
+	rows, next, hasMore, err := h.reports.AssetsOverdue(c.Context(), after, limit)
+	if err != nil {
+		return err
+	}
+	return respondCursor(c, rows, next, hasMore, limit)
 }
 
 func (h *ReportHandler) InRepair(c *fiber.Ctx) error {
-	rows, err := h.reports.InRepair(c.Context())
+	after, limit, err := ParseKeyset(c)
 	if err != nil {
 		return err
 	}
-	return response.OK(c, rows)
+	rows, next, hasMore, err := h.reports.InRepair(c.Context(), after, limit)
+	if err != nil {
+		return err
+	}
+	return respondCursor(c, rows, next, hasMore, limit)
+}
+
+// respondCursor serializes a keyset page: data + meta.cursor, encoding next
+// into an opaque token only when there is a further page.
+func respondCursor(c *fiber.Ctx, data any, next *pagination.Cursor, hasMore bool, limit int) error {
+	page := response.CursorPage{Limit: limit, HasMore: hasMore}
+	if next != nil {
+		page.NextCursor = pagination.Encode(*next)
+	}
+	return response.PaginatedCursor(c, data, page)
 }
 
 func (h *ReportHandler) ByResponsible(c *fiber.Ctx) error {
