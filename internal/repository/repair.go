@@ -11,6 +11,7 @@ import (
 
 	"imp/internal/apperror"
 	"imp/internal/models"
+	"imp/internal/pagination"
 )
 
 type RepairRepository struct {
@@ -74,6 +75,42 @@ func (r *RepairRepository) List(ctx context.Context, filter bson.M, page, limit 
 		return nil, 0, apperror.Internal("decode repairs", err)
 	}
 	return out, total, nil
+}
+
+// FindPage returns up to `limit` repairs matching filter in
+// (createdAt desc, _id desc) order, positioned strictly after `after`
+// (nil = first page). Like AssetRepository.findPage it over-fetches by one row
+// to report hasMore. Backed by the {createdAt:-1,_id:-1} repairs index.
+func (r *RepairRepository) FindPage(ctx context.Context, filter bson.M, after *pagination.Cursor, limit int) ([]models.Repair, bool, error) {
+	if filter == nil {
+		filter = bson.M{}
+	}
+	q := filter
+	if after != nil {
+		q = bson.M{"$and": bson.A{filter, bson.M{"$or": bson.A{
+			bson.M{"createdAt": bson.M{"$lt": after.CreatedAt}},
+			bson.M{"createdAt": after.CreatedAt, "_id": bson.M{"$lt": after.ID}},
+		}}}}
+	}
+	cur, err := r.coll.Find(ctx, q,
+		options.Find().
+			SetSort(bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}).
+			SetLimit(int64(limit + 1)),
+	)
+	if err != nil {
+		return nil, false, apperror.Internal("find repairs page", err)
+	}
+	defer cur.Close(ctx)
+	var out []models.Repair
+	if err := cur.All(ctx, &out); err != nil {
+		return nil, false, apperror.Internal("decode repairs", err)
+	}
+	hasMore := false
+	if len(out) > limit {
+		hasMore = true
+		out = out[:limit]
+	}
+	return out, hasMore, nil
 }
 
 func (r *RepairRepository) Update(ctx context.Context, id bson.ObjectID, set bson.M) (*models.Repair, error) {

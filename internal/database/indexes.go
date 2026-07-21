@@ -85,6 +85,8 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 		{"repairs", []mongo.IndexModel{
 			{Keys: bson.D{{Key: "assetId", Value: 1}}},
 			{Keys: bson.D{{Key: "status", Value: 1}}},
+			// Backs the in-repair report keyset scan (createdAt desc, _id desc).
+			{Keys: bson.D{{Key: "createdAt", Value: -1}, {Key: "_id", Value: -1}}},
 		}},
 		{"notifications", []mongo.IndexModel{
 			{Keys: bson.D{{Key: "status", Value: 1}, {Key: "createdAt", Value: 1}}},
