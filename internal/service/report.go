@@ -6,6 +6,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/bson"
 
 	"imp/internal/models"
+	"imp/internal/pagination"
 	"imp/internal/repository"
 )
 
@@ -119,23 +120,47 @@ func (s *ReportService) ByDepartment(ctx context.Context, venueID *bson.ObjectID
 	return out, nil
 }
 
-func (s *ReportService) AssetsAway(ctx context.Context) ([]models.Asset, error) {
-	return s.assets.FindAwayFromHome(ctx)
-}
-
-func (s *ReportService) AssetsOverdue(ctx context.Context) ([]models.Asset, error) {
-	return s.assets.FindOverdue(ctx)
-}
-
-// InRepair returns repairs currently open or in_progress (i.e. not closed).
-func (s *ReportService) InRepair(ctx context.Context) ([]models.Repair, error) {
-	all, _, err := s.repairs.List(ctx, bson.M{
-		"status": bson.M{"$in": []models.RepairStatus{models.Open, models.InProgress}},
-	}, 1, 1000)
+func (s *ReportService) AssetsAway(ctx context.Context, after *pagination.Cursor, limit int) ([]models.Asset, *pagination.Cursor, bool, error) {
+	rows, hasMore, err := s.assets.FindAwayFromHomePage(ctx, after, limit)
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
 	}
-	return all, nil
+	return rows, nextAssetCursor(rows, hasMore), hasMore, nil
+}
+
+func (s *ReportService) AssetsOverdue(ctx context.Context, after *pagination.Cursor, limit int) ([]models.Asset, *pagination.Cursor, bool, error) {
+	rows, hasMore, err := s.assets.FindOverduePage(ctx, after, limit)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	return rows, nextAssetCursor(rows, hasMore), hasMore, nil
+}
+
+// InRepair returns repairs currently open or in_progress (i.e. not closed),
+// keyset-paginated.
+func (s *ReportService) InRepair(ctx context.Context, after *pagination.Cursor, limit int) ([]models.Repair, *pagination.Cursor, bool, error) {
+	rows, hasMore, err := s.repairs.FindPage(ctx, bson.M{
+		"status": bson.M{"$in": []models.RepairStatus{models.Open, models.InProgress}},
+	}, after, limit)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	var next *pagination.Cursor
+	if hasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		next = &pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
+	}
+	return rows, next, hasMore, nil
+}
+
+// nextAssetCursor builds the cursor for the next page from the last asset in
+// the current page, or nil when there is no next page.
+func nextAssetCursor(rows []models.Asset, hasMore bool) *pagination.Cursor {
+	if !hasMore || len(rows) == 0 {
+		return nil
+	}
+	last := rows[len(rows)-1]
+	return &pagination.Cursor{CreatedAt: last.CreatedAt, ID: last.ID}
 }
 
 // ByResponsible returns one row per custodian with their asset count.

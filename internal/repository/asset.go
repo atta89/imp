@@ -503,16 +503,6 @@ func (r *AssetRepository) AggregateByDepartment(ctx context.Context, venueID *bs
 	return out, nil
 }
 
-// FindAwayFromHome returns every asset where currentVenueId != homeVenueId.
-func (r *AssetRepository) FindAwayFromHome(ctx context.Context) ([]models.Asset, error) {
-	return r.find(ctx, awayFromHomeFilter())
-}
-
-// FindOverdue returns every asset with isOverdue=true.
-func (r *AssetRepository) FindOverdue(ctx context.Context) ([]models.Asset, error) {
-	return r.find(ctx, bson.M{"isOverdue": true})
-}
-
 // findPage returns up to `limit` assets matching filter in (createdAt desc,
 // _id desc) order — the GET /assets / ids-export keyset order — positioned
 // strictly after `after` (nil = newest first / first page). It over-fetches by
