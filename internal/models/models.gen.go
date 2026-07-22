@@ -296,58 +296,12 @@ type AuthResponse struct {
 	User   User      `json:"user"`
 }
 
-// BulkActionResponse defines model for BulkActionResponse.
-type BulkActionResponse struct {
-	Failed    int                `json:"failed"`
-	Results   []BulkActionResult `json:"results"`
-	Succeeded int                `json:"succeeded"`
-	Total     int                `json:"total"`
-}
-
-// BulkActionResult defines model for BulkActionResult.
-type BulkActionResult struct {
-	AssetID ObjectId `json:"assetId"`
-
-	// Error Present iff ok=false. Per-row reason: not_found, forbidden, invalid_transition, dest_venue_forbidden, etc.
-	Error *string `json:"error,omitempty"`
-	Ok    bool    `json:"ok"`
-}
-
 // BulkAssignRequest defines model for BulkAssignRequest.
 type BulkAssignRequest struct {
 	AssetIDs          []ObjectId  `json:"assetIds"`
 	AttachmentIDs     *[]ObjectId `json:"attachmentIds,omitempty"`
 	Notes             *string     `json:"notes,omitempty"`
 	ResponsibleUserID ObjectId    `json:"responsibleUserId"`
-
-	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued). Note: an unknown/inactive responsibleUserId is always a whole-request 400 regardless of this flag.
-	ValidOnly *bool `json:"validOnly,omitempty"`
-}
-
-// BulkAssignResponse defines model for BulkAssignResponse.
-type BulkAssignResponse struct {
-	Results []BulkActionResult `json:"results"`
-
-	// SkippedNoOp Assets already assigned to responsibleUserId; no movement written.
-	SkippedNoOp int `json:"skippedNoOp"`
-	Total       int `json:"total"`
-
-	// Updated Assets whose responsibleUserId changed; one custody_change Movement was written for each.
-	Updated int `json:"updated"`
-}
-
-// BulkConditionResult defines model for BulkConditionResult.
-type BulkConditionResult struct {
-	Skipped []BulkConditionSkipped `json:"skipped"`
-	Updated int                    `json:"updated"`
-}
-
-// BulkConditionSkipped defines model for BulkConditionSkipped.
-type BulkConditionSkipped struct {
-	ID ObjectId `json:"id"`
-
-	// Reason One of: not_found, forbidden, unchanged.
-	Reason string `json:"reason"`
 }
 
 // BulkConditionUpdate defines model for BulkConditionUpdate.
@@ -356,9 +310,6 @@ type BulkConditionUpdate struct {
 	AttachmentIDs *[]ObjectId    `json:"attachmentIds,omitempty"`
 	Condition     AssetCondition `json:"condition"`
 	Notes         *string        `json:"notes,omitempty"`
-
-	// ValidOnly Accepted for symmetry with the other bulk actions. The condition job is best-effort by design: no-op/not-found/forbidden rows are counted as skips, not errors, so this flag has no effect on enqueue outcome.
-	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // BulkIdsRequest Enqueue an async asset-id export. filters mirrors GET /assets; limit caps the result.
@@ -440,9 +391,6 @@ type BulkStatusRequest struct {
 	AttachmentIDs *[]ObjectId `json:"attachmentIds,omitempty"`
 	Reason        *string     `json:"reason,omitempty"`
 	Status        AssetStatus `json:"status"`
-
-	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued).
-	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // BulkTransferRequest defines model for BulkTransferRequest.
@@ -454,9 +402,6 @@ type BulkTransferRequest struct {
 	ExpectedReturnDate *time.Time `json:"expectedReturnDate,omitempty"`
 	Notes              *string    `json:"notes,omitempty"`
 	ToVenueID          ObjectId   `json:"toVenueId"`
-
-	// ValidOnly If true, enqueue the valid rows and record invalid ones as job row errors instead of failing the whole request. Default false (strict: any invalid row → 400, nothing enqueued).
-	ValidOnly *bool `json:"validOnly,omitempty"`
 }
 
 // Category defines model for Category.
