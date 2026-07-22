@@ -747,7 +747,10 @@ func (s *BulkJobService) applyRow(ctx context.Context, job *repository.BulkJobDo
 		}
 		_, err := s.asset.applyAssignCustody(ctx, a, performedBy, *job.Params.ResponsibleUserID, job.Params.Notes, attachmentIDs)
 		if err != nil {
-			return s.classifyApplyErr(id, err, "conflict")
+			if isKind(err, apperror.KindConflict) {
+				return outcomeSkipped, nil, nil
+			}
+			return outcomeErrored, nil, err // infra
 		}
 		return outcomeSucceeded, nil, nil
 
@@ -774,22 +777,6 @@ func (s *BulkJobService) applyRow(ctx context.Context, job *repository.BulkJobDo
 		return outcomeSucceeded, nil, nil
 	}
 	return outcomeErrored, rowErr(id, "unknown_type", "unknown job type"), nil
-}
-
-// classifyApplyErr maps an apply* helper's error to a row outcome: a business
-// Conflict is a TOCTOU row error (using conflictCode); anything else is an
-// infrastructure error that aborts the batch.
-func (s *BulkJobService) classifyApplyErr(id bson.ObjectID, err error, conflictCode string) (rowOutcome, *models.BulkJobRowError, error) {
-	if err == nil {
-		return outcomeSucceeded, nil, nil
-	}
-	if isKind(err, apperror.KindConflict) {
-		return outcomeErrored, rowErr(id, conflictCode, err.Error()), nil
-	}
-	if isKind(err, apperror.KindNotFound) {
-		return outcomeErrored, rowErr(id, "not_found", err.Error()), nil
-	}
-	return outcomeErrored, nil, err // infra → abort + retry
 }
 
 func rowErr(id bson.ObjectID, code, msg string) *models.BulkJobRowError {

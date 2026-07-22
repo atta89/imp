@@ -293,17 +293,19 @@ func TestPlanBulkTransfer_GlobalErrors(t *testing.T) {
 
 func TestPlanBulkStatus_NoOpAndForbidden(t *testing.T) {
 	venue := bson.NewObjectID()
+	otherVenue := bson.NewObjectID() // outside the principal's scope
 	p := Principal{VenueIDs: map[string]struct{}{venue.Hex(): {}}}
 	same := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue, Status: models.Available}
 	diff := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: venue, CurrentVenueID: venue, Status: models.InUse}
-	byID := map[bson.ObjectID]*models.Asset{same.ID: same, diff.ID: diff}
+	outOfScope := &models.Asset{ID: bson.NewObjectID(), HomeVenueID: otherVenue, CurrentVenueID: otherVenue, Status: models.InUse}
+	byID := map[bson.ObjectID]*models.Asset{same.ID: same, diff.ID: diff, outOfScope.ID: outOfScope}
 	lookup := func(id bson.ObjectID) (*models.Asset, error) {
 		if a, ok := byID[id]; ok {
 			return a, nil
 		}
 		return nil, apperror.NotFound("nf")
 	}
-	in := models.BulkStatusRequest{AssetIDs: []bson.ObjectID{same.ID, diff.ID}, Status: models.Available}
+	in := models.BulkStatusRequest{AssetIDs: []bson.ObjectID{same.ID, diff.ID, outOfScope.ID}, Status: models.Available}
 	toUpdate, skipped, err := planBulkStatus(in, p, lookup, 5000)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -311,8 +313,23 @@ func TestPlanBulkStatus_NoOpAndForbidden(t *testing.T) {
 	if len(toUpdate) != 1 || toUpdate[0] != diff.ID {
 		t.Fatalf("toUpdate = %v, want [%s]", toUpdate, diff.ID.Hex())
 	}
-	if len(skipped) != 1 || skipped[0].ID != same.ID || skipped[0].Reason != "unchanged" {
-		t.Fatalf("skipped = %+v, want [{%s unchanged}]", skipped, same.ID.Hex())
+	if len(skipped) != 2 {
+		t.Fatalf("skipped = %+v, want 2 entries", skipped)
+	}
+	reasons := map[bson.ObjectID]string{}
+	for _, s := range skipped {
+		reasons[s.ID] = s.Reason
+	}
+	if reasons[same.ID] != "unchanged" {
+		t.Fatalf("same reason = %q, want unchanged", reasons[same.ID])
+	}
+	if reasons[outOfScope.ID] != "forbidden" {
+		t.Fatalf("outOfScope reason = %q, want forbidden", reasons[outOfScope.ID])
+	}
+	for _, id := range toUpdate {
+		if id == outOfScope.ID {
+			t.Fatalf("outOfScope must not appear in toUpdate")
+		}
 	}
 }
 
