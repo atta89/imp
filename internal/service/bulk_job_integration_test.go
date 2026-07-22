@@ -552,9 +552,9 @@ func TestBulkJobIT_ErrorCapTruncation(t *testing.T) {
 		ids = append(ids, bson.NewObjectID())
 	}
 	job, err := e.bulkS.EnqueueTransfer(context.Background(), adminPrincipal().UserID, adminPrincipal(),
-		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest, ValidOnly: ptr(true)})
+		models.BulkTransferRequest{AssetIDs: ids, ToVenueID: dest})
 	if err != nil {
-		t.Fatalf("enqueue validOnly: %v", err)
+		t.Fatalf("enqueue: %v", err)
 	}
 	doc, _ := e.bulk.FindByID(context.Background(), job.ID)
 	if !doc.ErrorsTruncated {
