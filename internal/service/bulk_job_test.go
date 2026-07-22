@@ -113,7 +113,7 @@ func TestNewJobDocChunkingMath(t *testing.T) {
 	for i := range ids {
 		ids[i] = bson.NewObjectID()
 	}
-	job := s.newJobDoc(models.BulkJobTypeStatus, bson.NewObjectID(), ids, nil, false, repository.BulkJobParams{}, 250, 0, 0, nil)
+	job := s.newJobDoc(models.BulkJobTypeStatus, bson.NewObjectID(), ids, nil, repository.BulkJobParams{}, 250, 0, 0, nil)
 
 	if job.Progress.BatchesTotal != 3 { // ceil(250/100)
 		t.Fatalf("batchesTotal = %d, want 3", job.Progress.BatchesTotal)

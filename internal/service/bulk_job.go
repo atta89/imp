@@ -118,7 +118,6 @@ func (s *BulkJobService) newJobDoc(
 	requestedBy bson.ObjectID,
 	processIDs []bson.ObjectID,
 	attachmentIDs []bson.ObjectID,
-	validOnly bool,
 	params repository.BulkJobParams,
 	total, seedFailed, seedSkipped int,
 	seedErrors []models.BulkJobRowError,
@@ -145,7 +144,6 @@ func (s *BulkJobService) newJobDoc(
 		Params:        params,
 		AssetIDs:      processIDs,
 		AttachmentIDs: attachmentIDs,
-		ValidOnly:     validOnly,
 		BatchSize:     s.cfg.BatchSize,
 		Cursor:        0,
 	}
@@ -217,7 +215,7 @@ func (s *BulkJobService) EnqueueTransfer(ctx context.Context, performedBy bson.O
 		ExpectedReturnDate: in.ExpectedReturnDate,
 		Notes:              in.Notes,
 	}
-	job := s.newJobDoc(models.BulkJobTypeTransfer, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
+	job := s.newJobDoc(models.BulkJobTypeTransfer, performedBy, toUpdate, attachmentIDs, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
 		return nil, err
 	}
@@ -246,7 +244,7 @@ func (s *BulkJobService) EnqueueStatus(ctx context.Context, performedBy bson.Obj
 	}
 
 	params := repository.BulkJobParams{Status: &in.Status, Reason: in.Reason}
-	job := s.newJobDoc(models.BulkJobTypeStatus, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
+	job := s.newJobDoc(models.BulkJobTypeStatus, performedBy, toUpdate, attachmentIDs, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
 		return nil, err
 	}
@@ -291,7 +289,7 @@ func (s *BulkJobService) EnqueueAssign(ctx context.Context, performedBy bson.Obj
 	}
 
 	params := repository.BulkJobParams{ResponsibleUserID: &in.ResponsibleUserID, Notes: in.Notes}
-	job := s.newJobDoc(models.BulkJobTypeAssign, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
+	job := s.newJobDoc(models.BulkJobTypeAssign, performedBy, toUpdate, attachmentIDs, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
 		return nil, err
 	}
@@ -323,7 +321,7 @@ func (s *BulkJobService) EnqueueCondition(ctx context.Context, performedBy bson.
 	}
 
 	params := repository.BulkJobParams{Condition: &in.Condition, Notes: in.Notes}
-	job := s.newJobDoc(models.BulkJobTypeCondition, performedBy, toUpdate, attachmentIDs, false, params, len(ids), 0, len(skipped), nil)
+	job := s.newJobDoc(models.BulkJobTypeCondition, performedBy, toUpdate, attachmentIDs, params, len(ids), 0, len(skipped), nil)
 	if err := s.persist(ctx, job, attachmentIDs); err != nil {
 		return nil, err
 	}
@@ -339,7 +337,7 @@ func (s *BulkJobService) EnqueueQR(ctx context.Context, performedBy bson.ObjectI
 	if _, err := s.asset.QRBulkValidate(ctx, p, ids); err != nil {
 		return nil, err
 	}
-	job := s.newJobDoc(models.BulkJobTypeQr, performedBy, ids, nil, false, repository.BulkJobParams{}, len(ids), 0, 0, nil)
+	job := s.newJobDoc(models.BulkJobTypeQr, performedBy, ids, nil, repository.BulkJobParams{}, len(ids), 0, 0, nil)
 	// qr renders a single artifact, not per-batch; batchesTotal is meaningless.
 	job.Progress.BatchesTotal = 1
 	if err := s.persist(ctx, job, nil); err != nil {
@@ -741,7 +739,7 @@ func (s *BulkJobService) applyRow(ctx context.Context, job *repository.BulkJobDo
 
 	case models.BulkJobTypeAssign:
 		if a == nil {
-			return outcomeErrored, rowErr(id, "not_found", "asset not found at execution"), nil
+			return outcomeSkipped, nil, nil // deleted since planning
 		}
 		// Re-read custodian: still assigned → skip, NO movement.
 		if a.ResponsibleUserID != nil && *a.ResponsibleUserID == *job.Params.ResponsibleUserID {

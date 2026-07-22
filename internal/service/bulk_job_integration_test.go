@@ -339,6 +339,38 @@ func TestBulkJobIT_AssignSkipsAndDigestOnce(t *testing.T) {
 	}
 }
 
+// TestBulkJobIT_AssignDeletedAssetIsSkip covers the TOCTOU path in applyRow's
+// BulkJobTypeAssign case: the asset is present and assignable at enqueue but
+// hard-deleted before the worker executes the row, which must count as a
+// skip, not a failure — mirroring
+// TestBulkJobIT_TransferSameVenueAndDeletedAreSkips.
+func TestBulkJobIT_AssignDeletedAssetIsSkip(t *testing.T) {
+	e := setupIT(t, BulkJobConfig{BatchSize: 2, MaxAttempts: 3, ErrorCap: 100, Lease: time.Minute})
+	home := e.seedVenue(true)
+	custodian := e.seedUser(models.Staff, home, true, true)
+	id := e.seedAsset(home, home, models.InUse, models.Good, nil) // valid at enqueue, gone at execution
+
+	job, err := e.bulkS.EnqueueAssign(context.Background(), adminPrincipal().UserID, adminPrincipal(),
+		models.BulkAssignRequest{AssetIDs: []bson.ObjectID{id}, ResponsibleUserID: custodian})
+	if err != nil || job == nil {
+		t.Fatalf("enqueue: job=%v err=%v", job, err)
+	}
+	if job.Counts.Skipped != 0 {
+		t.Fatalf("skipped at enqueue=%d want 0 (asset present and assignable)", job.Counts.Skipped)
+	}
+
+	// TOCTOU, after enqueue but before the worker runs: hard-delete the asset.
+	e.deleteAsset(id)
+
+	doc := e.runToCompletion(job)
+	if doc.Counts.Failed != 0 {
+		t.Fatalf("failed=%d want 0 (deleted-at-execution asset must be a skip, not an error)", doc.Counts.Failed)
+	}
+	if doc.Counts.Skipped != 1 {
+		t.Fatalf("skipped=%d want 1", doc.Counts.Skipped)
+	}
+}
+
 func TestBulkJobIT_AssignUnknownUserIs400AtEnqueue(t *testing.T) {
 	e := setupIT(t, BulkJobConfig{BatchSize: 2})
 	home := e.seedVenue(true)

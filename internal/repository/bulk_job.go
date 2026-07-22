@@ -78,7 +78,6 @@ type BulkJobDoc struct {
 	Params        BulkJobParams   `bson:"params"`
 	AssetIDs      []bson.ObjectID `bson:"assetIds"`
 	AttachmentIDs []bson.ObjectID `bson:"attachmentIds,omitempty"`
-	ValidOnly     bool            `bson:"validOnly,omitempty"`
 	BatchSize     int             `bson:"batchSize"`
 
 	// Cursor is the index of the next unprocessed asset in AssetIDs. It is
